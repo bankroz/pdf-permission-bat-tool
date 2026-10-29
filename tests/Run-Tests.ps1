@@ -138,6 +138,37 @@ Assert-True -Value (Confirm-Processing -NoPrompt) -Name 'non-interactive confirm
 $tempFiles = @(Get-ChildItem -LiteralPath $integration -Filter '*.tmp.pdf' -Force)
 Assert-Equal -Expected 0 -Actual $tempFiles.Count -Name 'temporary files cleaned'
 
+if ($DeliverySmokeTest) {
+    $delivery = Join-Path $projectRoot 'dist\PDF权限处理工具_BAT版'
+    $deliveryZip = Join-Path $projectRoot 'dist\PDF权限处理工具_BAT版.zip'
+    $deliveryExists = Test-Path -LiteralPath $delivery -PathType Container
+    Assert-True -Value $deliveryExists -Name 'delivery directory exists'
+    Assert-True -Value ((Test-Path -LiteralPath $deliveryZip -PathType Leaf) -and ((Get-Item -LiteralPath $deliveryZip).Length -gt 0)) -Name 'delivery ZIP exists'
+
+    if ($deliveryExists) {
+        $deliveryBat = Join-Path $delivery 'PDF权限处理工具.bat'
+        $deliveryScript = Join-Path $delivery 'tools\pdf_tool.ps1'
+        $deliveryReadme = Join-Path $delivery '使用说明.txt'
+        $deliveryQpdf = Join-Path $delivery 'qpdf\bin\qpdf.exe'
+        $deliveryManifest = Join-Path $delivery 'SHA256SUMS.txt'
+
+        Assert-True -Value (Test-Path -LiteralPath $deliveryBat -PathType Leaf) -Name 'delivery contains BAT launcher'
+        Assert-True -Value (Test-Path -LiteralPath $deliveryScript -PathType Leaf) -Name 'delivery contains PowerShell logic'
+        Assert-True -Value (Test-Path -LiteralPath $deliveryReadme -PathType Leaf) -Name 'delivery contains usage guide'
+        Assert-True -Value (Test-Path -LiteralPath $deliveryQpdf -PathType Leaf) -Name 'delivery contains qpdf executable'
+        Assert-True -Value (Test-Path -LiteralPath $deliveryManifest -PathType Leaf) -Name 'delivery contains SHA-256 manifest'
+
+        $licenseFiles = @(Get-ChildItem -LiteralPath (Join-Path $delivery 'licenses') -File -ErrorAction SilentlyContinue)
+        Assert-True -Value ($licenseFiles.Count -ge 3) -Name 'delivery contains qpdf license notices'
+
+        if (Test-Path -LiteralPath $deliveryQpdf -PathType Leaf) {
+            $deliveryVersion = & $deliveryQpdf --version
+            Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Name 'bundled qpdf starts'
+            Assert-True -Value (($deliveryVersion -join ' ') -match '12\.4\.2') -Name 'bundled qpdf version pinned'
+        }
+    }
+}
+
 if ($script:failed -gt 0) {
     throw "$script:failed tests failed"
 }
