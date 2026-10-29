@@ -253,10 +253,20 @@ if ($DeliverySmokeTest) {
         Assert-True -Value (Test-Path -LiteralPath $deliveryReadme -PathType Leaf) -Name 'delivery contains usage guide'
         Assert-True -Value (Test-Path -LiteralPath $deliveryQpdf -PathType Leaf) -Name 'delivery contains qpdf executable'
         Assert-True -Value (Test-Path -LiteralPath $deliveryManifest -PathType Leaf) -Name 'delivery contains SHA-256 manifest'
-        foreach ($relativePath in @('PDF去水印工具.bat', 'tools\watermark_ui.ps1', 'watermark\watermark_core.exe', 'licenses\pypdf-LICENSE.txt', 'licenses\PyInstaller-COPYING.txt')) {
+        foreach ($relativePath in @(
+            'PDF去水印工具.bat', 'tools\watermark_ui.ps1', 'watermark\watermark_core.exe',
+            'licenses\pypdf-LICENSE.txt', 'licenses\PyInstaller-COPYING.txt',
+            'licenses\CPython-3.10.11-LICENSE.txt', 'licenses\CPython-3.10.11-THIRDPARTY-LICENSES.rst.txt',
+            'licenses\CPython-3.10.11-Expat-COPYING.txt', 'licenses\typing_extensions-4.16.0-LICENSE.txt'
+        )) {
             $deliveryFile = Join-Path $delivery $relativePath
             $exists = Test-Path -LiteralPath $deliveryFile -PathType Leaf
             Assert-True -Value ($exists -and (Get-Item -LiteralPath $deliveryFile).Length -gt 0) -Name "delivery contains nonempty $relativePath"
+        }
+        $deliveryWatermarkUi = Join-Path $delivery 'tools\watermark_ui.ps1'
+        if (Test-Path -LiteralPath $deliveryWatermarkUi -PathType Leaf) {
+            $sourceWatermarkUi = Join-Path $projectRoot 'src\tools\watermark_ui.ps1'
+            Assert-Equal -Expected (Get-FileHash -LiteralPath $sourceWatermarkUi -Algorithm SHA256).Hash -Actual (Get-FileHash -LiteralPath $deliveryWatermarkUi -Algorithm SHA256).Hash -Name 'delivery watermark UI matches current source bytes'
         }
         $deliveryCore = Join-Path $delivery 'watermark\watermark_core.exe'
         if (Test-Path -LiteralPath $deliveryCore -PathType Leaf) {
@@ -306,6 +316,9 @@ if ($DeliverySmokeTest) {
                 $zipManifest = Join-Path $zipToolRoot 'SHA256SUMS.txt'
 
                 Assert-True -Value (Test-DeliveryManifest -Root $zipToolRoot) -Name 'extracted ZIP manifest validates exact file set and bytes'
+                # Both manifests validate exact coverage, so identical manifest bytes bind every covered file hash across artifacts.
+                Assert-Equal -Expected (Get-FileHash -LiteralPath $deliveryManifest -Algorithm SHA256).Hash -Actual (Get-FileHash -LiteralPath $zipManifest -Algorithm SHA256).Hash -Name 'extracted ZIP and delivery manifests have identical SHA256'
+                Assert-True -Value ([Convert]::ToBase64String([IO.File]::ReadAllBytes($deliveryManifest)) -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($zipManifest))) -Name 'extracted ZIP and delivery manifest bytes are identical'
 
                 $zipInputDir = Join-Path $zipTestRoot 'input (中文 &!)'
                 New-Item -ItemType Directory -Force -Path $zipInputDir | Out-Null

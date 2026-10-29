@@ -44,6 +44,12 @@ Copy-Item -LiteralPath $watermarkCore -Destination (Join-Path $watermarkDir 'wat
 Copy-Item -LiteralPath (Join-Path $projectRoot 'src\使用说明.txt') -Destination $delivery
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\pypdf-LICENSE.txt') -Destination $licensesDir
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\PyInstaller-COPYING.txt') -Destination $licensesDir
+foreach ($name in @(
+    'CPython-3.10.11-LICENSE.txt', 'CPython-3.10.11-THIRDPARTY-LICENSES.rst.txt',
+    'CPython-3.10.11-Expat-COPYING.txt', 'typing_extensions-4.16.0-LICENSE.txt'
+)) {
+    Copy-Item -LiteralPath (Join-Path $projectRoot ('third_party\' + $name)) -Destination $licensesDir
+}
 
 $vendorRoot = Join-Path $projectRoot 'vendor\qpdf-12.4.2-msvc64'
 $vendorBin = Join-Path $vendorRoot 'bin'

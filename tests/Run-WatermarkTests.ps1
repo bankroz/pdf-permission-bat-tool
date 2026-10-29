@@ -433,12 +433,23 @@ if ($DeliverySmokeTest) {
     . (Join-Path $PSScriptRoot 'Run-Tests.ps1') -LibraryMode
     $delivery = Join-Path $projectRoot 'dist\PDF权限处理工具_BAT版'
     $deliveryZip = Join-Path $projectRoot 'dist\PDF权限处理工具_BAT版.zip'
-    $requiredFiles = @('PDF去水印工具.bat', 'tools\watermark_ui.ps1', 'watermark\watermark_core.exe', 'licenses\pypdf-LICENSE.txt', 'licenses\PyInstaller-COPYING.txt')
+    $deliveryManifest = Join-Path $delivery 'SHA256SUMS.txt'
+    $licenseNames = @(
+        'pypdf-LICENSE.txt', 'PyInstaller-COPYING.txt',
+        'CPython-3.10.11-LICENSE.txt', 'CPython-3.10.11-THIRDPARTY-LICENSES.rst.txt',
+        'CPython-3.10.11-Expat-COPYING.txt', 'typing_extensions-4.16.0-LICENSE.txt'
+    )
+    $requiredFiles = @('PDF去水印工具.bat', 'tools\watermark_ui.ps1', 'watermark\watermark_core.exe') + @($licenseNames | ForEach-Object { 'licenses\' + $_ })
     Assert-True -Value (Test-Path -LiteralPath $delivery -PathType Container) -Name 'watermark delivery directory exists'
     foreach ($relativePath in $requiredFiles) {
         $deliveryFile = Join-Path $delivery $relativePath
         $exists = Test-Path -LiteralPath $deliveryFile -PathType Leaf
         Assert-True -Value ($exists -and (Get-Item -LiteralPath $deliveryFile).Length -gt 0) -Name "watermark delivery contains nonempty $relativePath"
+    }
+    $deliveryWatermarkUi = Join-Path $delivery 'tools\watermark_ui.ps1'
+    if (Test-Path -LiteralPath $deliveryWatermarkUi -PathType Leaf) {
+        $sourceWatermarkUi = Join-Path $projectRoot 'src\tools\watermark_ui.ps1'
+        Assert-Equal -Expected (Get-FileHash -LiteralPath $sourceWatermarkUi -Algorithm SHA256).Hash -Actual (Get-FileHash -LiteralPath $deliveryWatermarkUi -Algorithm SHA256).Hash -Name 'watermark delivery UI matches current source bytes'
     }
     $deliveryCore = Join-Path $delivery 'watermark\watermark_core.exe'
     if (Test-Path -LiteralPath $deliveryCore -PathType Leaf) {
@@ -446,7 +457,7 @@ if ($DeliverySmokeTest) {
         Assert-Equal -Expected 0 -Actual $version.ExitCode -Name 'delivery watermark core starts'
         Assert-Equal -Expected "0.2.0`r`n" -Actual $version.StdOut -Name 'delivery watermark core version is exactly 0.2.0'
     }
-    foreach ($name in @('pypdf-LICENSE.txt', 'PyInstaller-COPYING.txt')) {
+    foreach ($name in $licenseNames) {
         $license = Join-Path $delivery ('licenses\' + $name)
         if (Test-Path -LiteralPath $license -PathType Leaf) {
             $sourceLicense = Join-Path $projectRoot ('third_party\' + $name)
@@ -526,7 +537,11 @@ if ($DeliverySmokeTest) {
             $zipBat = Join-Path $zipToolRoot 'PDF去水印工具.bat'
             $zipCore = Join-Path $zipToolRoot 'watermark\watermark_core.exe'
             $zipQpdf = Join-Path $zipToolRoot 'qpdf\bin\qpdf.exe'
+            $zipManifest = Join-Path $zipToolRoot 'SHA256SUMS.txt'
             Assert-True -Value (Test-DeliveryManifest -Root $zipToolRoot) -Name 'watermark extracted ZIP manifest covers exact file set and hashes'
+            # Exact coverage is verified above for both artifacts; matching manifests also match every covered file hash.
+            Assert-Equal -Expected (Get-FileHash -LiteralPath $deliveryManifest -Algorithm SHA256).Hash -Actual (Get-FileHash -LiteralPath $zipManifest -Algorithm SHA256).Hash -Name 'watermark ZIP and delivery manifests have identical SHA256'
+            Assert-True -Value ([Convert]::ToBase64String([IO.File]::ReadAllBytes($deliveryManifest)) -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($zipManifest))) -Name 'watermark ZIP and delivery manifest bytes are identical'
             $zipInputDir = Join-Path $zipTestRoot '输入 文件 (中文 &!)'
             New-Item -ItemType Directory -Path $zipInputDir -Force | Out-Null
             $zipInput = Join-Path $zipInputDir '标记水印 (1) &!.pdf'
