@@ -9,7 +9,10 @@ import unittest
 from unittest.mock import patch
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, ContentStream, DecodedStreamObject, NameObject
+from pypdf.generic import (
+    ArrayObject, ContentStream, DecodedStreamObject, DictionaryObject, FloatObject,
+    NameObject,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +29,15 @@ BODY = b"q 0 0 1 rg 10 10 40 40 re f Q\n"
 MARK = b"q 1 0 0 rg 20 20 10 10 re f Q\n"
 START = b"/Artifact << /Subtype /Watermark /Type /Pagination >> BDC\n"
 WATERMARK = START + MARK + b"EMC\n"
+GRAPHICS_STATE = b"0.5 g 0.5 G /GS0 gs\n"
+STATE_RESOURCES = DictionaryObject({
+    NameObject("/ExtGState"): DictionaryObject({
+        NameObject("/GS0"): DictionaryObject({
+            NameObject("/Type"): NameObject("/ExtGState"),
+            NameObject("/ca"): FloatObject(0.5),
+        }),
+    }),
+})
 
 
 class WatermarkCoreTests(unittest.TestCase):
@@ -36,10 +48,14 @@ class WatermarkCoreTests(unittest.TestCase):
         self.input = Path(self.temp.name) / "输入.pdf"
         self.output = Path(self.temp.name) / "输出.pdf"
 
-    def make_pdf(self, *pages, password=None):
+    def make_pdf(self, *pages, password=None, pdf_header=None, resources=None):
         writer = PdfWriter()
+        if pdf_header is not None:
+            writer.pdf_header = pdf_header
         for data in pages:
             page = writer.add_blank_page(width=100, height=100)
+            if resources is not None:
+                page[NameObject("/Resources")] = resources
             stream = DecodedStreamObject()
             stream.set_data(data)
             page[NameObject("/Contents")] = writer._add_object(stream)
@@ -82,6 +98,97 @@ class WatermarkCoreTests(unittest.TestCase):
         self.assertEqual((result["pages"], result["removed_blocks"]), (1, 1))
         self.assertEqual(self.output_operations(), self.operations(BODY))
         self.assertEqual(PdfReader(self.input).pages[0].get_contents().get_data(), WATERMARK + BODY)
+
+    def test_preserves_input_pdf_header(self):
+        for header in ("%PDF-1.5", "%PDF-1.7"):
+            with self.subTest(header=header):
+                self.output = self.output.with_name(f"output-{header[-3:]}.pdf")
+                self.make_pdf(WATERMARK + BODY, pdf_header=header)
+                self.assertEqual(self.process()["status"], "success")
+                self.assertEqual(PdfReader(self.input).pdf_header, header)
+                self.assertEqual(PdfReader(self.output).pdf_header, header)
+                self.assertEqual(
+                    self.output.read_bytes().splitlines()[0],
+                    self.input.read_bytes().splitlines()[0],
+                )
+
+    def test_modified_content_stream_is_losslessly_flate_encoded(self):
+        self.make_pdf(WATERMARK + BODY * 32)
+        self.assertEqual(self.process()["status"], "success")
+        contents = PdfReader(self.output).pages[0]["/Contents"]
+        self.assertEqual(contents.get("/Filter"), NameObject("/FlateDecode"))
+        self.assertEqual(self.output_operations(), self.operations(BODY * 32))
+
+    def test_graphics_state_before_q_and_following_body_is_unsupported(self):
+        unsafe = START + GRAPHICS_STATE + MARK + b"EMC\n"
+        self.make_pdf(unsafe + BODY, resources=STATE_RESOURCES)
+        result = self.assert_no_output("unsupported")
+        self.assertEqual(result["message"], "水印绘图状态未隔离，安全跳过")
+        self.assertEqual((result["pages"], result["removed_blocks"]), (1, 0))
+
+    def test_graphics_state_inside_outer_q_is_safe_with_following_body(self):
+        isolated = START + b"q\n" + GRAPHICS_STATE + MARK + b"Q\nEMC\n"
+        self.make_pdf(isolated + BODY, resources=STATE_RESOURCES)
+        result = self.process()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["removed_blocks"], 1)
+        self.assertEqual(self.output_operations(), self.operations(BODY))
+
+    def test_two_nonisolated_tail_blocks_can_both_be_removed(self):
+        unsafe = START + GRAPHICS_STATE + MARK + b"EMC\n"
+        self.make_pdf(BODY + unsafe + unsafe, resources=STATE_RESOURCES)
+        result = self.process()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["removed_blocks"], 2)
+        self.assertEqual(self.output_operations(), self.operations(BODY))
+
+    def test_nonisolated_tail_block_followed_only_by_isolated_block_is_safe(self):
+        unsafe = START + GRAPHICS_STATE + MARK + b"EMC\n"
+        self.make_pdf(BODY + unsafe + WATERMARK, resources=STATE_RESOURCES)
+        result = self.process()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["removed_blocks"], 2)
+        self.assertEqual(self.output_operations(), self.operations(BODY))
+
+    def test_unsafe_block_on_later_page_prevents_entire_output(self):
+        unsafe = START + GRAPHICS_STATE + MARK + b"EMC\n"
+        self.make_pdf(WATERMARK + BODY, unsafe + BODY, resources=STATE_RESOURCES)
+        self.assert_no_output("unsupported")
+
+    def test_unsafe_block_keeps_existing_output_and_unsupported_status(self):
+        unsafe = START + GRAPHICS_STATE + MARK + b"EMC\n"
+        self.make_pdf(unsafe + BODY, resources=STATE_RESOURCES)
+        original = b"existing output survives safety rejection"
+        self.output.write_bytes(original)
+        result = self.process()
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(result["message"], "水印绘图状态未隔离，安全跳过")
+        self.assertEqual(self.output.read_bytes(), original)
+
+    def test_outer_q_must_enclose_all_content_and_have_balanced_depth(self):
+        for index, inner in enumerate((
+            b"", b"0.5 g\n", b"q Q q Q\n", b"q Q Q\n",
+            b"q q Q\n", b"q Q 0.5 g\n", b"q Q 0.5 g q Q\n",
+        )):
+            with self.subTest(inner=inner):
+                self.output = self.output.with_name(f"unsafe-{index}.pdf")
+                self.make_pdf(START + inner + b"EMC\n" + BODY)
+                self.assert_no_output("unsupported")
+
+    def test_nonisolated_block_before_retained_markers_is_unsupported(self):
+        self.make_pdf(START + GRAPHICS_STATE + b"EMC\n/Span BMC EMC\n",
+                      resources=STATE_RESOURCES)
+        self.assert_no_output("unsupported")
+
+    def test_cli_safety_rejection_is_utf8_json_with_unsupported_exit_code(self):
+        self.make_pdf(START + GRAPHICS_STATE + MARK + b"EMC\n" + BODY,
+                      resources=STATE_RESOURCES)
+        completed = self.run_cli(self.input, self.output)
+        self.assertEqual(completed.returncode, 10, completed.stderr)
+        result = json.loads(completed.stdout.decode("utf-8"))
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(result["message"], "水印绘图状态未隔离，安全跳过")
+        self.assertFalse(self.output.exists())
 
     def test_counts_three_watermarks_across_two_pages(self):
         self.make_pdf(WATERMARK + BODY, BODY + WATERMARK + WATERMARK)
@@ -144,7 +251,7 @@ class WatermarkCoreTests(unittest.TestCase):
         self.assertEqual(self.output_operations(), self.operations(span + BODY))
 
     def test_removes_nested_bdc_and_bmc_as_one_outer_block(self):
-        nested = b"/Span << /MCID 0 >> BDC\n/Span BMC\n" + MARK + b"EMC\nEMC\n"
+        nested = b"q\n/Span << /MCID 0 >> BDC\n/Span BMC\n" + MARK + b"EMC\nEMC\nQ\n"
         self.make_pdf(START + nested + b"EMC\n" + BODY)
         self.assertEqual(self.process()["removed_blocks"], 1)
         self.assertEqual(self.output_operations(), self.operations(BODY))
