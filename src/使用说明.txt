@@ -93,4 +93,10 @@ Windows 10 64 位（x64）。本机离线、免安装便携使用，无需安装
 qpdf 12.4.2（Apache 2.0，具体以随包 qpdf 许可证文件为准）。
 pypdf 6.10.2（BSD-3-Clause）。
 独立程序使用 PyInstaller 6.20.0 打包（GPL 及 Bootloader Exception，具体以随包许可证文件为准）。
-第三方许可证及版权文件位于 licenses 目录。
+CPython 3.10.11 运行时（PSF 及 Windows 发行版随附条款）。
+CPython 3.10.11 第三方许可说明（含 Expat、libmpdec、Mersenne Twister 等）。
+typing_extensions 4.16.0（具体许可见随包原文）。
+
+PyInstaller EXE 内嵌上述运行时组件，目标机仍无需安装 Python。
+第三方许可证及版权原文均位于 Release 发布包的 licenses 目录，Expat 实际 COPYING 也随包提供。
+这些条款仅对应第三方组件；项目自身未提供 LICENSE，不代表项目代码采用 PSF 等第三方许可证。

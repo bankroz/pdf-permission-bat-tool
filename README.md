@@ -59,10 +59,14 @@ tests/
 └─ Test-FetchIntegrity.ps1
 third_party/
 ├─ pypdf-LICENSE.txt
-└─ PyInstaller-COPYING.txt
+├─ PyInstaller-COPYING.txt
+├─ CPython-3.10.11-LICENSE.txt          # 运行时及 Windows 发行版条款
+├─ CPython-3.10.11-THIRDPARTY-LICENSES.rst.txt  # 运行时第三方许可说明
+├─ CPython-3.10.11-Expat-COPYING.txt    # Expat 实际 COPYING
+└─ typing_extensions-4.16.0-LICENSE.txt
 ```
 
-发布包中的 `watermark/watermark_core.exe` 是 PyInstaller 构建的 Windows x64 独立 EXE，目标机无需 Python。qpdf 仍随包提供，用于权限处理及水印输出校验。第三方许可证复制到发布包 `licenses/` 目录。
+发布包中的 `watermark/watermark_core.exe` 是 PyInstaller 构建的 Windows x64 独立 EXE，EXE 内嵌 CPython 3.10.11 运行时及 typing_extensions 4.16.0 等运行时组件，目标机仍无需安装 Python。qpdf 仍随包提供，用于权限处理及水印输出校验。第三方许可证复制到发布包 `licenses/` 目录。
 
 核心安全门：“页面内容流末尾”指内容操作的顺序，与水印在页面上的视觉位置无关。不在页面内容流末尾的候选仅在绘图状态严格隔离且操作安全时处理；位于页面内容流末尾的候选仍支持。无法确认删除不会影响后续内容时，跳过整个文件且不生成副本。
 
@@ -104,6 +108,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-FetchIntegr
 - qpdf 12.4.2：官方 Windows x64 运行时，LICENSE、NOTICE 及版权信息随包提供。[官方项目](https://github.com/qpdf/qpdf)。
 - pypdf 6.10.2：BSD-3-Clause，许可证见 `licenses/pypdf-LICENSE.txt`。
 - PyInstaller 6.20.0：GPL-2.0-or-later，带 bootloader exception；完整条款见 `licenses/PyInstaller-COPYING.txt`。
+- CPython 3.10.11 运行时：PSF 及 Windows 发行版随附条款，见 `licenses/CPython-3.10.11-LICENSE.txt`。
+- CPython 3.10.11 第三方许可说明：含 Expat、libmpdec、Mersenne Twister 等，见 `licenses/CPython-3.10.11-THIRDPARTY-LICENSES.rst.txt`；Expat 实际 COPYING 另见 `licenses/CPython-3.10.11-Expat-COPYING.txt`。
+- typing_extensions 4.16.0：许可原文见 `licenses/typing_extensions-4.16.0-LICENSE.txt`。
+
+以上许可及版权原文均在 Release 的 licenses/ 目录，适用于 EXE 内嵌或随包分发的对应第三方组件。
 
 上述许可说明针对第三方组件；仓库目前未提供项目自身的 `LICENSE`，不能据此推定项目代码的授权范围。
 
