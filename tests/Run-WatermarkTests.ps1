@@ -361,7 +361,8 @@ if ($DeliverySmokeTest) {
         function New-MarkedWatermarkFixture {
             param([string]$Path)
             $body = "q 0 0 1 rg 10 10 40 40 re f Q`n"
-            $content = "/Artifact << /Subtype /Watermark /Type /Pagination >> BDC`nq 1 0 0 rg 20 20 10 10 re f Q`nEMC`n" + $body
+            # Keep the marked path drawing at the stream tail, within the core's supported safety scope.
+            $content = $body + "/Artifact << /Subtype /Watermark /Type /Pagination >> BDC`nq 1 0 0 rg 20 20 10 10 re f Q`nEMC`n"
             $objects = @(
                 '<< /Type /Catalog /Pages 2 0 R >>',
                 '<< /Type /Pages /Count 1 /Kids [3 0 R] >>',
@@ -418,6 +419,7 @@ if ($DeliverySmokeTest) {
             $fixtureContent = Read-WatermarkFixtureContent -Path $zipInput -QpdfPath $zipQpdf
             Assert-True -Value ($fixtureContent -match '/Artifact << /Subtype /Watermark /Type /Pagination >> BDC') -Name 'ZIP fixture has explicit target watermark block'
             Assert-True -Value ($fixtureContent -match '0 0 1 rg 10 10 40 40 re f') -Name 'ZIP fixture has separate blue body graphic'
+            Assert-True -Value ($fixtureContent -match '(?s)\Aq 0 0 1 rg 10 10 40 40 re f Q\s+/Artifact << /Subtype /Watermark /Type /Pagination >> BDC\s+q 1 0 0 rg 20 20 10 10 re f Q\s+EMC\s*\z') -Name 'ZIP fixture keeps body before trailing marked watermark'
             $inputHash = (Get-FileHash -LiteralPath $zipInput -Algorithm SHA256).Hash
             $inputTime = (Get-Item -LiteralPath $zipInput).LastWriteTimeUtc.Ticks
             '' | & $zipBat '-NoPrompt' $zipInput
