@@ -74,7 +74,7 @@ BAT 内容保持纯 ASCII、无 BOM，不使用 `chcp 65001` 或延迟扩展；�
 
 ## 构建
 
-构建环境为 Windows 10 x64，构建机需安装 Python 3.10 x64 与 `py` launcher（启动器）。在仓库根目录执行：
+构建环境为 Windows 10 x64，发布构建机需安装 CPython 3.10.11 x64 与 `py` launcher（启动器）。构建脚本强制校验此版本，以确保与锁定的运行时及随包许可文件一致。在仓库根目录执行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-Portable.ps1
