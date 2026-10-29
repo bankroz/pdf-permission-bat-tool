@@ -4,3 +4,7 @@ vendor/
 dist/
 tests/tmp/
 *.tmp.pdf
+.build/
+*_去水印.pdf
+__pycache__/
+*.py[cod]

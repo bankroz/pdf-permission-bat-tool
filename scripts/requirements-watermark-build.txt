@@ -1,0 +1,2 @@
+pypdf==6.10.2
+PyInstaller==6.20.0
