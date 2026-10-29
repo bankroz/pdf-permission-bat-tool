@@ -211,12 +211,12 @@ function Test-WatermarkOutput {
         $count = Invoke-WatermarkProcess -Path $QpdfPath -Arguments @('--show-npages', $Path)
         $details = ($details + [Environment]::NewLine + $count.StdOut + [Environment]::NewLine + $count.StdErr).Trim()
         $actualPages = 0L
-        if (-not $count.Started -or $count.ExitCode -ne 0 -or
+        if (-not $count.Started -or $count.ExitCode -notin @(0, 3) -or
             $count.StdOut.Trim() -notmatch '^[0-9]+$' -or
             -not [long]::TryParse($count.StdOut.Trim(), [ref]$actualPages) -or $actualPages -ne $Pages) {
             throw 'qpdf 页数检查失败或与去水印核心不一致。'
         }
-        return [pscustomobject]@{ IsValid = $true; IsWarning = $check.ExitCode -eq 3; Details = $details }
+        return [pscustomobject]@{ IsValid = $true; IsWarning = ($check.ExitCode -eq 3 -or $count.ExitCode -eq 3); Details = $details }
     }
     catch {
         return [pscustomobject]@{ IsValid = $false; IsWarning = $false; Details = ($_.Exception.Message + [Environment]::NewLine + $details).Trim() }
@@ -237,8 +237,8 @@ function Invoke-WatermarkFile {
         $fullInput = $validation.InputPath
         $finalPath = Get-WatermarkOutputPath -InputPath $fullInput
         $directory = [IO.Path]::GetDirectoryName($fullInput)
-        $stem = [IO.Path]::GetFileNameWithoutExtension($fullInput)
-        $tempPath = Join-Path $directory ('.{0}.{1}.watermark.tmp.pdf' -f $stem, [guid]::NewGuid().ToString('N'))
+        # Keep the same directory without extending a long input filename.
+        $tempPath = Join-Path $directory ('.{0}.wm.tmp.pdf' -f [guid]::NewGuid().ToString('N'))
         $core = Invoke-WatermarkCore -CorePath $CorePath -InputPath $fullInput -OutputPath $tempPath
         if ($core.Status -eq 'unsupported') {
             return New-WatermarkResult -Status 'Skipped' -InputPath $fullInput -Message $core.Message `

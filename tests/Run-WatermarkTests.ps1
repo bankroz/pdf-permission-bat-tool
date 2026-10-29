@@ -63,15 +63,16 @@ public static class WatermarkDependencyFixture {
             string mode = File.ReadAllText(args[1]).Trim();
             if (args[0] == "--check") {
                 Console.Error.WriteLine("检查中文输出");
-                return mode == "qpdffail" ? 2 : (mode == "warning" ? 3 : 0);
+                return mode == "qpdffail" ? 2 : (mode == "warning" || mode == "bothwarning" ? 3 : 0);
             }
             if (args[0] == "--show-npages") {
-                Console.WriteLine(mode == "pagewrong" ? "4" : (mode == "badpages" ? "not-an-integer" : "3"));
-                return mode == "pagecommandfail" ? 2 : 0;
+                Console.WriteLine(mode == "pagewrong" || mode == "pagewarningwrong" ? "4" : (mode == "badpages" || mode == "pagewarninginvalid" ? "not-an-integer" : "3"));
+                return mode == "pagecommandfail" ? 2 : (mode.StartsWith("pagewarning", StringComparison.Ordinal) || mode == "bothwarning" ? 3 : 0);
             }
             return 2;
         }
         string state = File.ReadAllText(args[0]).Trim();
+        if (state == "longpath") File.WriteAllText(args[0] + ".temp-path.txt", args[1]);
         if (state == "badjson") { File.WriteAllText(args[1], "partial"); Console.WriteLine("{invalid JSON"); return 0; }
         if (state == "badshape") { Console.WriteLine("{\"status\":\"success\",\"message\":\"missing counts\"}"); return 0; }
         if (state == "unknown") { Console.WriteLine("{\"status\":\"mystery\",\"message\":\"unknown\",\"pages\":3,\"removed_blocks\":4}"); return 0; }
@@ -191,7 +192,62 @@ $warning = Invoke-WatermarkFile -InputPath $warningInput -CorePath $fakeExe -Qpd
 Assert-Equal -Expected 'Warning' -Actual $warning.Status -Name 'qpdf check exit three publishes warning'
 Assert-True -Value (Test-Path -LiteralPath $warning.OutputPath -PathType Leaf) -Name 'warning output exists'
 
-foreach ($mode in @('unsupported', 'encrypted', 'invalid', 'failed', 'badjson', 'badshape', 'unknown', 'mismatch', 'qpdffail', 'pagewrong', 'badpages', 'pagecommandfail', 'missingoutput', 'emptyoutput')) {
+foreach ($mode in @('pagewarning', 'bothwarning')) {
+    $warningPath = New-TestInput -Name $mode -Mode $mode
+    $warningCheck = Test-WatermarkOutput -Path $warningPath -QpdfPath $qpdfExe -Pages 3
+    Assert-True -Value $warningCheck.IsValid -Name "$mode page-count exit three validates"
+    Assert-True -Value $warningCheck.IsWarning -Name "$mode page-count warning preserved"
+    $warningResult = Invoke-WatermarkFile -InputPath $warningPath -CorePath $fakeExe -QpdfPath $qpdfExe
+    Assert-Equal -Expected 'Warning' -Actual $warningResult.Status -Name "$mode publishes as Warning"
+    Assert-True -Value ([IO.File]::Exists($warningResult.OutputPath)) -Name "$mode warning output published"
+}
+
+# Keep both public paths within MAX_PATH while the former stem-based temp exceeds it.
+$longStem = 'n' * (215 - $inputDir.Length - 5)
+$longInput = New-TestInput -Name $longStem -Mode 'longpath'
+$longOutput = Get-WatermarkOutputPath -InputPath $longInput
+$formerTemp = Join-Path $inputDir ('.{0}.{1}.watermark.tmp.pdf' -f $longStem, ('a' * 32))
+Assert-Equal -Expected 215 -Actual $longInput.Length -Name 'long-path input remains usable on Windows'
+Assert-Equal -Expected 219 -Actual $longOutput.Length -Name 'long-path final output remains usable on Windows'
+Assert-True -Value ($formerTemp.Length -ge 260) -Name 'former temporary naming exceeds Windows path limit'
+$unrelatedTemp = Join-Path $inputDir 'unrelated.watermark.tmp.pdf'
+[IO.File]::WriteAllText($unrelatedTemp, 'unrelated file must survive')
+$longResult = Invoke-WatermarkFile -InputPath $longInput -CorePath $fakeExe -QpdfPath $qpdfExe
+$actualTemp = [IO.File]::ReadAllText($longInput + '.temp-path.txt')
+Assert-Equal -Expected 'Success' -Actual $longResult.Status -Name 'long input publishes successfully using short temporary name'
+Assert-True -Value ([IO.File]::Exists($longOutput)) -Name 'long-path final output exists'
+Assert-True -Value ($actualTemp.Length -lt $longInput.Length) -Name 'temporary path is shorter than usable input path'
+Assert-Equal -Expected $inputDir -Actual ([IO.Path]::GetDirectoryName($actualTemp)) -Name 'short temporary file stays beside input'
+Assert-True -Value (([IO.Path]::GetFileName($actualTemp)).Length -le 48) -Name 'temporary name length is independent of input stem'
+Assert-Equal -Expected $false -Actual ([IO.File]::Exists($actualTemp)) -Name 'short temporary file cleaned after publication'
+Assert-Equal -Expected 'unrelated file must survive' -Actual ([IO.File]::ReadAllText($unrelatedTemp)) -Name 'cleanup preserves unrelated temporary files'
+Remove-Item -LiteralPath $unrelatedTemp
+
+# Use a synthetic damaged xref to verify the pinned real qpdf when available.
+$realQpdf = Join-Path $projectRoot 'vendor\qpdf-12.4.2-msvc64\bin\qpdf.exe'
+if (Test-Path -LiteralPath $realQpdf -PathType Leaf) {
+    $repairFixture = Join-Path $inputDir 'repairable-xref.pdf'
+    Assert-True -Value (Test-WatermarkDependencies -CorePath $fakeExe -QpdfPath $realQpdf).IsValid -Name 'real qpdf xref integration uses pinned version'
+    $damagedPdf = @(
+        '%PDF-1.4',
+        '1 0 obj', '<< /Type /Catalog /Pages 2 0 R >>', 'endobj',
+        '2 0 obj', '<< /Type /Pages /Count 1 /Kids [3 0 R] >>', 'endobj',
+        '3 0 obj', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> >>', 'endobj',
+        'trailer', '<< /Root 1 0 R /Size 4 >>', 'startxref', '1', '%%EOF', ''
+    ) -join [Environment]::NewLine
+    [IO.File]::WriteAllText($repairFixture, $damagedPdf, [Text.Encoding]::ASCII)
+    $realCheck = Invoke-WatermarkProcess -Path $realQpdf -Arguments @('--check', $repairFixture)
+    $realCount = Invoke-WatermarkProcess -Path $realQpdf -Arguments @('--show-npages', $repairFixture)
+    Assert-Equal -Expected 3 -Actual $realCheck.ExitCode -Name 'real qpdf check warns on recoverable xref damage'
+    Assert-Equal -Expected 3 -Actual $realCount.ExitCode -Name 'real qpdf page count also warns on recoverable xref damage'
+    Assert-Equal -Expected '1' -Actual $realCount.StdOut.Trim() -Name 'real qpdf warning still returns correct page count'
+    $realValidation = Test-WatermarkOutput -Path $repairFixture -QpdfPath $realQpdf -Pages 1
+    Assert-True -Value $realValidation.IsValid -Name 'real qpdf recoverable xref output accepted'
+    Assert-True -Value $realValidation.IsWarning -Name 'real qpdf recoverable xref output marked Warning'
+}
+else { Write-Host 'SKIP real qpdf xref integration: vendor executable unavailable.' }
+
+foreach ($mode in @('unsupported', 'encrypted', 'invalid', 'failed', 'badjson', 'badshape', 'unknown', 'mismatch', 'qpdffail', 'pagewrong', 'badpages', 'pagecommandfail', 'pagewarningwrong', 'pagewarninginvalid', 'missingoutput', 'emptyoutput')) {
     $inputPath = New-TestInput -Name $mode -Mode $mode
     $result = Invoke-WatermarkFile -InputPath $inputPath -CorePath $fakeExe -QpdfPath $qpdfExe
     $expectedStatus = if ($mode -eq 'unsupported') { 'Skipped' } else { 'Failed' }
