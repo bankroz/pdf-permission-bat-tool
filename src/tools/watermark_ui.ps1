@@ -231,6 +231,7 @@ function Invoke-WatermarkFile {
     )
     $fullInput = $InputPath
     $tempPath = $null
+    $tempOwned = $false
     try {
         $validation = Test-WatermarkInputPath -Path $InputPath
         if (-not $validation.IsValid) { return $validation }
@@ -238,8 +239,25 @@ function Invoke-WatermarkFile {
         $finalPath = Get-WatermarkOutputPath -InputPath $fullInput
         $directory = [IO.Path]::GetDirectoryName($fullInput)
         # Keep the same directory without extending a long input filename.
-        $tempPath = Join-Path $directory ('.{0}.wm.tmp.pdf' -f [guid]::NewGuid().ToString('N'))
+        for ($attempt = 0; $attempt -lt 10; $attempt++) {
+            $candidate = Join-Path $directory ('.{0}.wm.tmp.pdf' -f [guid]::NewGuid().ToString('N'))
+            if (-not (Test-Path -LiteralPath $candidate)) {
+                $tempPath = $candidate
+                break
+            }
+        }
+        if (-not $tempPath) {
+            return New-WatermarkResult -Status 'Failed' -InputPath $fullInput -Message '无法获得唯一临时文件名，请稍后重试。'
+        }
         $core = Invoke-WatermarkCore -CorePath $CorePath -InputPath $fullInput -OutputPath $tempPath
+        # A failed/invalid core response cannot establish who created this path.
+        if ($core.Status -eq 'success' -and [IO.File]::Exists($tempPath) -and
+            (Get-Item -LiteralPath $tempPath).Length -gt 0) {
+            $tempOwned = $true
+        }
+        elseif ([IO.File]::Exists($tempPath)) {
+            $core.Details = ($core.Details + [Environment]::NewLine + '临时文件所有权未经确认，已保留而未自动清理。').Trim()
+        }
         if ($core.Status -eq 'unsupported') {
             return New-WatermarkResult -Status 'Skipped' -InputPath $fullInput -Message $core.Message `
                 -Details $core.Details -Pages $core.Pages -RemovedBlocks $core.RemovedBlocks
@@ -266,7 +284,7 @@ function Invoke-WatermarkFile {
             -Message '处理过程中发生错误，未修改原文件。' -Details $_.Exception.Message
     }
     finally {
-        if ($tempPath -and [IO.File]::Exists($tempPath)) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
+        if ($tempOwned -and $tempPath -and [IO.File]::Exists($tempPath)) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
     }
 }
 

@@ -74,7 +74,8 @@ public static class WatermarkDependencyFixture {
             return 2;
         }
         string state = File.ReadAllText(args[0]).Trim();
-        if (state == "longpath") File.WriteAllText(args[0] + ".temp-path.txt", args[1]);
+        File.WriteAllText(args[0] + ".temp-path.txt", args[1]);
+        if (Path.GetFileName(args[1]).StartsWith(".", StringComparison.Ordinal)) File.AppendAllLines(args[0] + ".temp-paths.txt", new string[] { args[1] });
         if (state == "badjson") { File.WriteAllText(args[1], "partial"); Console.WriteLine("{invalid JSON"); return 0; }
         if (state == "badshape") { Console.WriteLine("{\"status\":\"success\",\"message\":\"missing counts\"}"); return 0; }
         if (state == "unknown") { Console.WriteLine("{\"status\":\"mystery\",\"message\":\"unknown\",\"pages\":3,\"removed_blocks\":4}"); return 0; }
@@ -104,6 +105,26 @@ function New-TestInput {
     $path = Join-Path $inputDir ($Name + '.pdf')
     [IO.File]::WriteAllText($path, $Mode, (New-Object Text.UTF8Encoding($false)))
     return $path
+}
+
+function Remove-TestCoreTemporaryFile {
+    param([string]$Path)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if ([IO.Path]::GetDirectoryName($fullPath) -ne $inputDir -or
+        [IO.Path]::GetFileName($fullPath) -notmatch '^\.[a-f0-9]{32}\.wm\.tmp\.pdf$') {
+        throw "Refusing unsafe test fixture cleanup: $fullPath"
+    }
+    if ([IO.File]::Exists($fullPath)) { Remove-Item -LiteralPath $fullPath -Force }
+}
+
+function Clear-TestCoreResidues {
+    # Remove only unowned failure fixtures; owned leftovers must still fail cleanup assertions.
+    foreach ($record in @(Get-ChildItem -LiteralPath $inputDir -Filter '*.temp-paths.txt' -File)) {
+        $sourcePath = $record.FullName.Substring(0, $record.FullName.Length - '.temp-paths.txt'.Length)
+        $mode = [IO.File]::ReadAllText($sourcePath).Trim()
+        if ($mode -notin @('unsupported', 'encrypted', 'invalid', 'failed', 'badjson', 'mismatch', 'emptyoutput')) { continue }
+        foreach ($path in [IO.File]::ReadAllLines($record.FullName)) { Remove-TestCoreTemporaryFile -Path $path }
+    }
 }
 
 $plain = New-TestInput -Name '普通 文件 (1) &!'
@@ -256,8 +277,64 @@ foreach ($mode in @('unsupported', 'encrypted', 'invalid', 'failed', 'badjson', 
     Assert-Equal -Expected $expectedStatus -Actual $result.Status -Name "$mode gets safe result"
     Assert-Equal -Expected '' -Actual $result.OutputPath -Name "$mode has no published path"
     Assert-Equal -Expected $false -Actual (Test-Path -LiteralPath (Join-Path $inputDir ($mode + '_去水印.pdf'))) -Name "$mode never publishes output"
+    $recordedTemp = [IO.File]::ReadAllText($inputPath + '.temp-path.txt')
+    if ($mode -in @('unsupported', 'encrypted', 'invalid', 'failed', 'badjson', 'mismatch', 'emptyoutput')) {
+        Assert-True -Value ([IO.File]::Exists($recordedTemp)) -Name "$mode unconfirmed temporary file is preserved"
+        if ([IO.File]::Exists($recordedTemp)) {
+            $expectedContent = if ($mode -eq 'badjson') { 'partial' } elseif ($mode -eq 'emptyoutput') { '' } else { $mode }
+            Assert-Equal -Expected $expectedContent -Actual ([IO.File]::ReadAllText($recordedTemp)) -Name "$mode unconfirmed temporary bytes unchanged"
+        }
+        # These artificial failure residues belong to the fixture, not the UI.
+        Remove-TestCoreTemporaryFile -Path $recordedTemp
+    }
+    else {
+        Assert-Equal -Expected $false -Actual ([IO.File]::Exists($recordedTemp)) -Name "$mode confirmed output failure leaves no owned temporary file"
+    }
 }
 Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $inputDir -Filter '*.tmp.pdf' -Force).Count -Name 'all per-file temporary files cleaned'
+
+# Inject a real occupied candidate only at the filesystem existence boundary.
+$collisionInput = New-TestInput -Name 'temp collision'
+$script:collisionPath = ''
+Set-Item -Path Function:\Test-Path -Value {
+    param([string]$LiteralPath, [string]$PathType)
+    if (-not $PathType -and [IO.Path]::GetFileName($LiteralPath) -match '^\.[a-f0-9]{32}\.wm\.tmp\.pdf$' -and -not $script:collisionPath) {
+        $script:collisionPath = $LiteralPath
+        [IO.File]::WriteAllText($LiteralPath, 'existing candidate belongs to someone else')
+    }
+    $parameters = @{ LiteralPath = $LiteralPath }
+    if ($PathType) { $parameters.PathType = $PathType }
+    return Microsoft.PowerShell.Management\Test-Path @parameters
+}
+try { $collisionResult = Invoke-WatermarkFile -InputPath $collisionInput -CorePath $fakeExe -QpdfPath $qpdfExe }
+finally { Remove-Item -Path Function:\Test-Path }
+Assert-True -Value ([bool]$script:collisionPath) -Name 'temporary candidate checked before core starts'
+Assert-Equal -Expected 'Success' -Actual $collisionResult.Status -Name 'occupied temporary candidate is retried'
+$usedTemp = [IO.File]::ReadAllText($collisionInput + '.temp-path.txt')
+Assert-True -Value ($usedTemp -ne $script:collisionPath) -Name 'core never receives occupied temporary candidate'
+if ($script:collisionPath) {
+    Assert-Equal -Expected 'existing candidate belongs to someone else' -Actual ([IO.File]::ReadAllText($script:collisionPath)) -Name 'occupied candidate bytes preserved'
+    Remove-TestCoreTemporaryFile -Path $script:collisionPath
+}
+
+$exhaustedInput = New-TestInput -Name 'temp retries exhausted'
+$script:collisionAttempts = 0
+Set-Item -Path Function:\Test-Path -Value {
+    param([string]$LiteralPath, [string]$PathType)
+    if (-not $PathType -and [IO.Path]::GetFileName($LiteralPath) -match '^\.[a-f0-9]{32}\.wm\.tmp\.pdf$') {
+        $script:collisionAttempts++
+        return $true
+    }
+    $parameters = @{ LiteralPath = $LiteralPath }
+    if ($PathType) { $parameters.PathType = $PathType }
+    return Microsoft.PowerShell.Management\Test-Path @parameters
+}
+try { $exhaustedResult = Invoke-WatermarkFile -InputPath $exhaustedInput -CorePath $fakeExe -QpdfPath $qpdfExe }
+finally { Remove-Item -Path Function:\Test-Path }
+Assert-Equal -Expected 'Failed' -Actual $exhaustedResult.Status -Name 'temporary collision exhaustion fails safely'
+Assert-True -Value ($script:collisionAttempts -gt 1 -and $script:collisionAttempts -le 16) -Name 'temporary collision retries are bounded'
+Assert-True -Value ($exhaustedResult.Message -match '临时') -Name 'temporary collision exhaustion explains failure'
+Assert-Equal -Expected $false -Actual ([IO.File]::Exists($exhaustedInput + '.temp-path.txt')) -Name 'core is not started when all temporary candidates are occupied'
 $invalidPath = 'illegal' + [char]0 + '.pdf'
 $pathResult = Invoke-WatermarkFile -InputPath $invalidPath -CorePath $fakeExe -QpdfPath $qpdfExe
 Assert-Equal -Expected 'Failed' -Actual $pathResult.Status -Name 'illegal path preparation exception converted to Failed'
@@ -312,6 +389,7 @@ finally {
     Set-Item -Path Function:\Select-WatermarkPdfFiles -Value $originalSelect
     Set-Item -Path Function:\Confirm-WatermarkProcessing -Value $originalConfirm
 }
+Clear-TestCoreResidues
 Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $inputDir -Filter '*.tmp.pdf' -Force).Count -Name 'batch leaves no temporary files'
 if ($DeliverySmokeTest) {
     # Import the same exact manifest verifier used by the original tool's tests.
