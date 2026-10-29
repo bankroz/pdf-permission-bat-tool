@@ -4,6 +4,23 @@ param()
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+$directRequirements = Join-Path $PSScriptRoot 'requirements-watermark-build.txt'
+$requirements = Join-Path $PSScriptRoot 'requirements-watermark-lock.txt'
+$directLines = @(Get-Content -LiteralPath $directRequirements)
+$lockLines = @(Get-Content -LiteralPath $requirements)
+foreach ($name in @('pypdf', 'PyInstaller')) {
+    $directPattern = '^' + [regex]::Escape($name) + '==([^\s]+)$'
+    $directPin = @($directLines | Where-Object { $_ -match $directPattern })
+    if ($directPin.Count -ne 1) {
+        throw "直接依赖清单必须包含唯一的固定版本：$name"
+    }
+    $version = [regex]::Match($directPin[0], $directPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase).Groups[1].Value
+    $lockPattern = '^' + [regex]::Escape($name) + '==' + [regex]::Escape($version) + '\s+--hash=sha256:[0-9a-f]{64}$'
+    if (@($lockLines | Where-Object { $_ -match $lockPattern }).Count -ne 1) {
+        throw "依赖锁与直接清单版本不一致或缺少 SHA256：$name==$version"
+    }
+}
+
 $projectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $expectedBuildPrefix = [IO.Path]::GetFullPath((Join-Path $projectRoot '.build')).TrimEnd('\') + '\'
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '.build\watermark-core'))
@@ -36,9 +53,8 @@ catch {
     throw "无法创建构建环境，请确认已安装 Python 3.10 和 py 启动器：$($_.Exception.Message)"
 }
 
-$requirements = Join-Path $PSScriptRoot 'requirements-watermark-build.txt'
-Write-Host '正在安装固定版本的构建依赖……'
-& $python -m pip install --disable-pip-version-check --requirement $requirements | Out-Host
+Write-Host '正在校验 SHA256 并安装完整锁定的构建依赖……'
+& $python -m pip install --disable-pip-version-check --require-hashes --force-reinstall --requirement $requirements | Out-Host
 if ($LASTEXITCODE -ne 0) {
     throw '构建依赖安装失败，请检查网络、证书和 pip 输出。'
 }

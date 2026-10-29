@@ -1,0 +1,36 @@
+# Validated: CPython 3.10.11 x64, Windows 10 19045, pip 23.0.1.
+# Scope: Windows x64 / CPython 3.10 only; PyInstaller wheel is win_amd64.
+# Full build environment, including pip and setuptools; direct pins remain
+# in requirements-watermark-build.txt for review.
+# Hashes generated from pip download --only-binary=:all: --no-deps files
+# with python -m pip hash; retain these exact distribution files.
+
+# altgraph-0.17.5-py2.py3-none-any.whl
+altgraph==0.17.5 --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+
+# packaging-26.3-py3-none-any.whl
+packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+
+# pefile-2024.8.26-py3-none-any.whl
+pefile==2024.8.26 --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+
+# pip-23.0.1-py3-none-any.whl
+pip==23.0.1 --hash=sha256:236bcb61156d76c4b8a05821b988c7b8c35bf0da28a4b614e8d6ab5212c25c6f
+
+# pyinstaller-6.20.0-py3-none-win_amd64.whl
+pyinstaller==6.20.0 --hash=sha256:d588844e890ee80c4365867f98146636e1849bbca8e4284bbf0c809aff0f161a
+
+# pyinstaller_hooks_contrib-2026.9-py3-none-any.whl
+pyinstaller-hooks-contrib==2026.9 --hash=sha256:fb3e67dd64122561724c48ad0366ac9e8c16e638b63bf7d85de03bf3fdbf06c3
+
+# pypdf-6.10.2-py3-none-any.whl
+pypdf==6.10.2 --hash=sha256:aa53be9826655b51c96741e5d7983ca224d898ac0a77896e64636810517624aa
+
+# pywin32_ctypes-0.2.3-py3-none-any.whl
+pywin32-ctypes==0.2.3 --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
+
+# setuptools-65.5.0-py3-none-any.whl
+setuptools==65.5.0 --hash=sha256:f62ea9da9ed6289bfe868cd6845968a2c854d1427f8548d52cae02a42b4f0356
+
+# typing_extensions-4.16.0-py3-none-any.whl
+typing_extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

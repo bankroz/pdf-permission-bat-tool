@@ -8,3 +8,4 @@ tests/tmp/
 *_去水印.pdf
 __pycache__/
 *.py[cod]
+*_去水印_[0-9]*.pdf
