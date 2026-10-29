@@ -47,11 +47,11 @@
 
 1. `PDF权限处理工具.bat`
    - 用户可见入口。
-   - 设置适合中文显示的控制台代码页。
+   - 文件内容保持纯 ASCII，不切换 CMD 代码页；中文界面由 PowerShell 输出。
    - 使用当前 BAT 所在目录定位 PowerShell 脚本，不依赖当前工作目录。
    - 将拖入的参数原样交给 PowerShell。
 
-2. `tools/处理PDF.ps1`
+2. `tools/pdf_tool.ps1`
    - 使用 Windows 10 自带的 Windows PowerShell 5.1 和 .NET Framework。
    - 双击启动且没有输入参数时，通过 `System.Windows.Forms.OpenFileDialog` 多选 PDF。
    - 校验输入、生成输出名、调用 qpdf、检查结果、清理临时文件并汇总状态。
@@ -78,7 +78,7 @@ PDF权限处理工具_BAT版/
 │  └─ superpowers/specs/
 ├─ src/
 │  ├─ PDF权限处理工具.bat
-│  └─ tools/处理PDF.ps1
+│  └─ tools/pdf_tool.ps1
 ├─ vendor/qpdf/
 ├─ licenses/
 ├─ tests/
@@ -93,7 +93,7 @@ PDF权限处理工具_BAT版/
 dist/PDF权限处理工具_BAT版/
 ├─ PDF权限处理工具.bat
 ├─ tools/
-│  └─ 处理PDF.ps1
+│  └─ pdf_tool.ps1
 ├─ qpdf/
 │  └─ qpdf 官方便携文件
 ├─ licenses/
@@ -167,6 +167,7 @@ dist/PDF权限处理工具_BAT版/
 
 - 所有工具路径都相对于脚本自身目录解析。
 - PowerShell 使用数组传递 qpdf 参数，不通过 `cmd /c` 拼接 qpdf 命令。
+- BAT 内容保持纯 ASCII、无 BOM，不使用 `chcp 65001` 或延迟扩展；PowerShell 脚本使用 UTF-8 BOM，保证 Windows PowerShell 5.1 正确解析中文。
 - 文件名可包含中文、空格、`&`、括号和感叹号。
 - 不修改、不删除输入文件，不使用 qpdf 的 `--replace-input`。
 - 不记录密码、PDF 正文或持久化文件清单。

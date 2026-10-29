@@ -16,7 +16,7 @@
 - `scripts/Fetch-Qpdf.ps1`: downloads the pinned official qpdf ZIP, verifies SHA-256, and extracts it reproducibly.
 - `scripts/Build-Portable.ps1`: assembles the final portable directory and writes a SHA-256 manifest.
 - `src/PDF权限处理工具.bat`: double-click and drag/drop launcher.
-- `src/tools/处理PDF.ps1`: all user interaction and PDF-processing logic.
+- `src/tools/pdf_tool.ps1`: all user interaction and PDF-processing logic; saved as UTF-8 with BOM for Windows PowerShell 5.1.
 - `src/使用说明.txt`: end-user instructions, limitations, privacy statement, and troubleshooting.
 - `tests/Run-Tests.ps1`: dependency-free unit and integration test runner.
 - `dist/PDF权限处理工具_BAT版/`: generated, runnable delivery directory.
@@ -105,7 +105,7 @@ git commit -m "build: pin portable qpdf dependency"
 
 **Files:**
 - Create: `tests/Run-Tests.ps1`
-- Create: `src/tools/处理PDF.ps1`
+- Create: `src/tools/pdf_tool.ps1`
 
 - [ ] **Step 1: Write failing unit tests**
 
@@ -114,7 +114,7 @@ Create a dependency-free runner that dot-sources the production script in librar
 ```powershell
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$scriptPath = Join-Path $projectRoot 'src\tools\处理PDF.ps1'
+$scriptPath = Join-Path $projectRoot 'src\tools\pdf_tool.ps1'
 . $scriptPath -LibraryMode
 
 $script:passed = 0
@@ -162,7 +162,7 @@ Expected: FAIL because production functions do not exist.
 
 - [ ] **Step 3: Implement the primitives and typed result shape**
 
-Create `src/tools/处理PDF.ps1` with:
+Create `src/tools/pdf_tool.ps1` with:
 
 ```powershell
 [CmdletBinding()]
@@ -218,7 +218,7 @@ Expected: all naming and validation tests print `PASS`, with zero failures.
 - [ ] **Step 5: Commit primitives**
 
 ```powershell
-git add tests/Run-Tests.ps1 src/tools/处理PDF.ps1
+git add tests/Run-Tests.ps1 src/tools/pdf_tool.ps1
 git commit -m "feat: add safe PDF path primitives"
 ```
 
@@ -226,7 +226,7 @@ git commit -m "feat: add safe PDF path primitives"
 
 **Files:**
 - Modify: `tests/Run-Tests.ps1`
-- Modify: `src/tools/处理PDF.ps1`
+- Modify: `src/tools/pdf_tool.ps1`
 - Create: `src/PDF权限处理工具.bat`
 
 - [ ] **Step 1: Add failing integration assertions**
@@ -274,7 +274,7 @@ Expected: FAIL because `Invoke-PdfCopy` is undefined.
 
 - [ ] **Step 3: Implement qpdf invocation and batch flow**
 
-Add focused functions to `处理PDF.ps1`:
+Add focused functions to `pdf_tool.ps1`:
 
 ```powershell
 function Get-FriendlyQpdfError {
@@ -426,14 +426,15 @@ Create:
 ```bat
 @echo off
 setlocal DisableDelayedExpansion
-chcp 65001 >nul
 set "TOOL_ROOT=%~dp0"
-powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File "%TOOL_ROOT%tools\处理PDF.ps1" %*
+powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File "%TOOL_ROOT%tools\pdf_tool.ps1" %*
 set "TOOL_EXIT=%ERRORLEVEL%"
-echo.
+echo(
 pause
 exit /b %TOOL_EXIT%
 ```
+
+The BAT file must contain ASCII bytes only, have no BOM, and contain neither `chcp` nor `enabledelayedexpansion`. Add test assertions for those rules. All `.ps1` files that contain Chinese text must start with the UTF-8 BOM bytes `EF BB BF` so Windows PowerShell 5.1 does not decode them as CP936.
 
 - [ ] **Step 5: Run unit and integration tests**
 
@@ -448,7 +449,7 @@ Expected: all assertions pass, password-required and damaged PDFs fail safely, a
 - [ ] **Step 6: Commit processing implementation**
 
 ```powershell
-git add src/PDF权限处理工具.bat src/tools/处理PDF.ps1 tests/Run-Tests.ps1
+git add src/PDF权限处理工具.bat src/tools/pdf_tool.ps1 tests/Run-Tests.ps1
 git commit -m "feat: add portable batch PDF processing"
 ```
 
@@ -475,7 +476,7 @@ $delivery = Join-Path $projectRoot 'dist\PDF权限处理工具_BAT版'
 if (Test-Path -LiteralPath $delivery) { Remove-Item -LiteralPath $delivery -Recurse -Force }
 New-Item -ItemType Directory -Force -Path (Join-Path $delivery 'tools'), (Join-Path $delivery 'licenses') | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'src\PDF权限处理工具.bat') -Destination $delivery
-Copy-Item -LiteralPath (Join-Path $projectRoot 'src\tools\处理PDF.ps1') -Destination (Join-Path $delivery 'tools')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'src\tools\pdf_tool.ps1') -Destination (Join-Path $delivery 'tools')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'src\使用说明.txt') -Destination $delivery
 $vendorRoot = Join-Path $projectRoot 'vendor\qpdf-12.4.2-msvc64'
 Copy-Item -LiteralPath $vendorRoot -Destination (Join-Path $delivery 'qpdf') -Recurse
