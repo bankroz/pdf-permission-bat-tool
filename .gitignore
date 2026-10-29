@@ -1,0 +1,6 @@
+.worktrees/
+.superpowers/
+vendor/
+dist/
+tests/tmp/
+*.tmp.pdf
