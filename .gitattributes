@@ -5,3 +5,4 @@
 third_party/CPython-3.10.11-LICENSE.txt -text
 third_party/typing_extensions-4.16.0-LICENSE.txt -text
 third_party/CPython-3.10.11-THIRDPARTY-LICENSES.rst.txt -text
+third_party/CPython-3.10.11-Expat-COPYING.txt -text
