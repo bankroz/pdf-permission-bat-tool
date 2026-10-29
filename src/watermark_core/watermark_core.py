@@ -13,6 +13,18 @@ from pypdf.generic import ContentStream, DecodedStreamObject, DictionaryObject, 
 VERSION = "0.2.0"
 EXIT_CODES = {"success": 0, "unsupported": 10, "encrypted": 11, "invalid": 12, "failed": 13}
 
+# q/Q does not restore text matrices or the current path. Deliberately reject
+# text, path, clipping and unknown operators inside non-tail candidates, even
+# when they appear balanced. pypdf 6.10.2 parses BI...EI as b"INLINE IMAGE".
+ISOLATED_OPERATORS = frozenset({
+    b"q", b"Q", b"cm", b"w", b"J", b"j", b"M", b"d", b"ri", b"i", b"gs",
+    b"CS", b"cs", b"SC", b"SCN", b"sc", b"scn", b"G", b"g", b"RG", b"rg",
+    b"K", b"k", b"Do", b"sh", b"BDC", b"BMC", b"EMC", b"MP", b"DP",
+    b"BX", b"EX", b"INLINE IMAGE",
+})
+PATH_CONSTRUCTION_OPERATORS = frozenset(b"m l c v y h re".split())
+PATH_ENDING_OPERATORS = frozenset(b"n S s f F f* B B* b b*".split())
+
 
 class WatermarkStructureError(ValueError):
     """A candidate watermark has no matching marked-content terminator."""
@@ -36,11 +48,13 @@ def _is_watermark(operands, operator):
 
 
 def _is_graphics_state_isolated(operations):
-    """Require one balanced outer q/Q pair enclosing every other operation."""
+    """Require one balanced q/Q pair and conservatively allowed operations."""
     if len(operations) < 2 or operations[0][1] != b"q" or operations[-1][1] != b"Q":
         return False
     depth = 0
     for index, (_, operator) in enumerate(operations):
+        if operator not in ISOLATED_OPERATORS:
+            return False
         if operator == b"q":
             depth += 1
         elif operator == b"Q":
@@ -55,6 +69,10 @@ def _remove_watermarks(operations):
     ranges = []
     depth = 0
     start = 0
+    text_depth = 0
+    text_state_invalid = False
+    path_nonempty = False
+    external_state_at_start = False
     for index, (operands, operator) in enumerate(operations):
         if depth:
             if operator in (b"BDC", b"BMC"):
@@ -62,19 +80,34 @@ def _remove_watermarks(operations):
             elif operator == b"EMC":
                 depth -= 1
             if depth == 0:
-                ranges.append((start, index))
+                ranges.append((start, index, external_state_at_start))
         elif _is_watermark(operands, operator):
             depth = 1
             start = index
+            external_state_at_start = text_depth != 0 or text_state_invalid or path_nonempty
         else:
             retained.append((index, (operands, operator)))
+            # Only retained operations advance external state. A safe candidate
+            # cannot change it, and rejected candidates abort the whole file.
+            if operator == b"BT":
+                text_state_invalid |= text_depth != 0
+                text_depth += 1
+            elif operator == b"ET":
+                text_state_invalid |= text_depth != 1
+                text_depth -= 1
+            elif operator in PATH_CONSTRUCTION_OPERATORS:
+                path_nonempty = True
+            elif operator in PATH_ENDING_OPERATORS:
+                path_nonempty = False
     if depth:
         raise WatermarkStructureError("水印标记内容块缺少匹配的 EMC")
     # Decide against the final retained content, so adjacent tail watermark
     # blocks can all be removed even when their graphics state is not isolated.
     last_retained = retained[-1][0] if retained else -1
-    for start, end in ranges:
-        if end < last_retained and not _is_graphics_state_isolated(operations[start + 1:end]):
+    for start, end, external_state in ranges:
+        if end < last_retained and (
+            external_state or not _is_graphics_state_isolated(operations[start + 1:end])
+        ):
             raise WatermarkSafetyError("水印绘图状态未隔离，安全跳过")
     return [operation for _, operation in retained], len(ranges)
 

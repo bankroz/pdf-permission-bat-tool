@@ -26,7 +26,8 @@ except ModuleNotFoundError as exc:
     watermark_core = None
 
 BODY = b"q 0 0 1 rg 10 10 40 40 re f Q\n"
-MARK = b"q 1 0 0 rg 20 20 10 10 re f Q\n"
+# A real one-pixel inline image avoids text/path effects in middle-block fixtures.
+MARK = b"q 20 0 0 20 20 20 cm BI /W 1 /H 1 /CS /RGB /BPC 8 ID \xff\x00\x00 EI Q\n"
 START = b"/Artifact << /Subtype /Watermark /Type /Pagination >> BDC\n"
 WATERMARK = START + MARK + b"EMC\n"
 GRAPHICS_STATE = b"0.5 g 0.5 G /GS0 gs\n"
@@ -189,6 +190,100 @@ class WatermarkCoreTests(unittest.TestCase):
         self.assertEqual(result["status"], "unsupported")
         self.assertEqual(result["message"], "水印绘图状态未隔离，安全跳过")
         self.assertFalse(self.output.exists())
+
+    def test_review_text_matrix_change_is_rejected_without_changing_source(self):
+        content = (b"BT\n" + START + b"q 20 0 Td (WM) Tj Q\nEMC\n"
+                   + b"(BODY) Tj ET\n")
+        self.make_pdf(content)
+        original = self.input.read_bytes()
+        self.assert_no_output("unsupported")
+        self.assertEqual(self.input.read_bytes(), original)
+        self.assertEqual(PdfReader(self.input).pages[0].get_contents().get_data(), content)
+
+    def test_review_path_consumption_is_rejected_without_changing_source(self):
+        content = b"10 10 40 40 re\n" + START + b"q n Q\nEMC\nf\n"
+        self.make_pdf(content)
+        original = self.input.read_bytes()
+        self.assert_no_output("unsupported")
+        self.assertEqual(self.input.read_bytes(), original)
+        self.assertEqual(PdfReader(self.input).pages[0].get_contents().get_data(), content)
+
+    def test_external_text_object_rejects_an_otherwise_safe_middle_block(self):
+        self.make_pdf(b"BT\n" + WATERMARK + b"(BODY) Tj ET\n")
+        self.assert_no_output("unsupported")
+
+    def test_external_unfinished_path_rejects_an_otherwise_safe_middle_block(self):
+        # q/Q does not clear the path built before the candidate either.
+        self.make_pdf(b"q 10 10 40 40 re Q\n" + WATERMARK + b"f\n")
+        self.assert_no_output("unsupported")
+
+    def test_finished_text_object_before_middle_block_is_safe(self):
+        prefix = b"BT (TEXT) Tj ET\n"
+        self.make_pdf(prefix + WATERMARK + BODY)
+        self.assertEqual(self.process()["status"], "success")
+        self.assertEqual(self.output_operations(), self.operations(prefix + BODY))
+
+    def test_path_ending_operations_clear_external_path_before_middle_block(self):
+        for index, operator in enumerate((b"n", b"S", b"s", b"f", b"F", b"f*",
+                                          b"B", b"B*", b"b", b"b*")):
+            with self.subTest(operator=operator):
+                self.output = self.output.with_name(f"path-end-{index}.pdf")
+                prefix = b"10 10 40 40 re\n" + operator + b"\n"
+                self.make_pdf(prefix + WATERMARK + BODY)
+                self.assertEqual(self.process()["status"], "success")
+                self.assertEqual(self.output_operations(), self.operations(prefix + BODY))
+
+    def test_text_path_clip_and_unknown_operations_inside_middle_block_are_rejected(self):
+        for index, content in enumerate((
+            b"BT ET", b"0 Tc", b"0 Tw", b"100 Tz", b"12 TL", b"/F0 10 Tf",
+            b"0 Tr", b"0 Ts", b"20 0 Td", b"20 0 TD", b"1 0 0 1 0 0 Tm",
+            b"T*", b"(WM) Tj", b"[(WM)] TJ", b"(WM) '", b'0 0 (WM) "',
+            b"0 0 m", b"1 1 l", b"1 1 2 2 3 3 c", b"1 1 2 2 v",
+            b"1 1 2 2 y", b"h", b"1 1 2 2 re", b"n", b"S", b"s", b"f",
+            b"F", b"f*", b"B", b"B*", b"b", b"b*", b"W", b"W*", b"mystery",
+        )):
+            with self.subTest(content=content):
+                self.output = self.output.with_name(f"rejected-op-{index}.pdf")
+                self.make_pdf(START + b"q\n" + content + b"\nQ\nEMC\n" + BODY)
+                self.assert_no_output("unsupported")
+
+    def test_middle_form_xobject_invocation_is_safe(self):
+        writer = PdfWriter()
+        form = DecodedStreamObject()
+        form.set_data(BODY)
+        form.update({
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Form"),
+            NameObject("/BBox"): ArrayObject([FloatObject(n) for n in (0, 0, 100, 100)]),
+            NameObject("/Resources"): DictionaryObject(),
+        })
+        resources = DictionaryObject({NameObject("/XObject"): DictionaryObject({
+            NameObject("/Fm"): writer._add_object(form),
+        })})
+        page = writer.add_blank_page(width=100, height=100)
+        page[NameObject("/Resources")] = resources
+        stream = DecodedStreamObject()
+        stream.set_data(START + b"q 1 0 0 1 2 3 cm /Fm Do Q\nEMC\n" + BODY)
+        page[NameObject("/Contents")] = writer._add_object(stream)
+        writer.write(self.input)
+
+        result = self.process()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["removed_blocks"], 1)
+        self.assertEqual(self.output_operations(), self.operations(BODY))
+
+    def test_inline_image_operator_name_and_middle_removal(self):
+        self.assertIn(b"INLINE IMAGE", [operator for _, operator in self.operations(MARK)])
+        self.make_pdf(WATERMARK + BODY)
+        self.assertEqual(self.process()["status"], "success")
+        self.assertEqual(self.output_operations(), self.operations(BODY))
+
+    def test_tail_blocks_still_allow_text_and_path_operations(self):
+        self.make_pdf(BODY + START + b"q BT (WM) Tj ET n mystery Q\nEMC\n")
+        result = self.process()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["removed_blocks"], 1)
+        self.assertEqual(self.output_operations(), self.operations(BODY))
 
     def test_counts_three_watermarks_across_two_pages(self):
         self.make_pdf(WATERMARK + BODY, BODY + WATERMARK + WATERMARK)
