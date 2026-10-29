@@ -1,5 +1,7 @@
 ﻿[CmdletBinding()]
-param()
+param(
+    [switch]$DeliverySmokeTest
+)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -311,5 +313,171 @@ finally {
     Set-Item -Path Function:\Confirm-WatermarkProcessing -Value $originalConfirm
 }
 Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $inputDir -Filter '*.tmp.pdf' -Force).Count -Name 'batch leaves no temporary files'
+if ($DeliverySmokeTest) {
+    # Import the same exact manifest verifier used by the original tool's tests.
+    . (Join-Path $PSScriptRoot 'Run-Tests.ps1') -LibraryMode
+    $delivery = Join-Path $projectRoot 'dist\PDF权限处理工具_BAT版'
+    $deliveryZip = Join-Path $projectRoot 'dist\PDF权限处理工具_BAT版.zip'
+    $requiredFiles = @('PDF去水印工具.bat', 'tools\watermark_ui.ps1', 'watermark\watermark_core.exe', 'licenses\pypdf-LICENSE.txt', 'licenses\PyInstaller-COPYING.txt')
+    Assert-True -Value (Test-Path -LiteralPath $delivery -PathType Container) -Name 'watermark delivery directory exists'
+    foreach ($relativePath in $requiredFiles) {
+        $deliveryFile = Join-Path $delivery $relativePath
+        $exists = Test-Path -LiteralPath $deliveryFile -PathType Leaf
+        Assert-True -Value ($exists -and (Get-Item -LiteralPath $deliveryFile).Length -gt 0) -Name "watermark delivery contains nonempty $relativePath"
+    }
+    $deliveryCore = Join-Path $delivery 'watermark\watermark_core.exe'
+    if (Test-Path -LiteralPath $deliveryCore -PathType Leaf) {
+        $version = Invoke-WatermarkProcess -Path $deliveryCore -Arguments @('--version')
+        Assert-Equal -Expected 0 -Actual $version.ExitCode -Name 'delivery watermark core starts'
+        Assert-Equal -Expected "0.2.0`r`n" -Actual $version.StdOut -Name 'delivery watermark core version is exactly 0.2.0'
+    }
+    foreach ($name in @('pypdf-LICENSE.txt', 'PyInstaller-COPYING.txt')) {
+        $license = Join-Path $delivery ('licenses\' + $name)
+        if (Test-Path -LiteralPath $license -PathType Leaf) {
+            $sourceLicense = Join-Path $projectRoot ('third_party\' + $name)
+            Assert-Equal -Expected (Get-FileHash -LiteralPath $sourceLicense -Algorithm SHA256).Hash -Actual (Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash -Name "delivery $name matches tracked source bytes"
+        }
+    }
+    Assert-True -Value (Test-DeliveryManifest -Root $delivery) -Name 'watermark delivery manifest covers exact file set and hashes'
+    $zipExists = (Test-Path -LiteralPath $deliveryZip -PathType Leaf) -and (Get-Item -LiteralPath $deliveryZip).Length -gt 0
+    Assert-True -Value $zipExists -Name 'watermark delivery ZIP exists and is nonempty'
+
+    if ($zipExists) {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::OpenRead($deliveryZip)
+        try {
+            $entries = @($archive.Entries | Where-Object { $_.Name } | ForEach-Object { $_.FullName.Replace('\', '/') } | Sort-Object)
+        }
+        finally { $archive.Dispose() }
+        foreach ($relativePath in $requiredFiles) {
+            Assert-True -Value ($entries -contains ('PDF权限处理工具_BAT版/' + $relativePath.Replace('\', '/'))) -Name "watermark ZIP contains $relativePath"
+        }
+        $expectedEntries = @(Get-ChildItem -LiteralPath $delivery -Recurse -File | ForEach-Object {
+            'PDF权限处理工具_BAT版/' + $_.FullName.Substring($delivery.Length + 1).Replace('\', '/')
+        } | Sort-Object)
+        Assert-Equal -Expected ($expectedEntries -join "`n") -Actual ($entries -join "`n") -Name 'watermark ZIP contains exact delivery file set'
+
+        # Generate a real one-page PDF without external data or a Python runtime.
+        function New-MarkedWatermarkFixture {
+            param([string]$Path)
+            $body = "q 0 0 1 rg 10 10 40 40 re f Q`n"
+            $content = "/Artifact << /Subtype /Watermark /Type /Pagination >> BDC`nq 1 0 0 rg 20 20 10 10 re f Q`nEMC`n" + $body
+            $objects = @(
+                '<< /Type /Catalog /Pages 2 0 R >>',
+                '<< /Type /Pages /Count 1 /Kids [3 0 R] >>',
+                '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R >>',
+                ("<< /Length $($content.Length) >>`nstream`n" + $content + 'endstream')
+            )
+            $pdf = "%PDF-1.4`n"
+            $offsets = @()
+            for ($i = 0; $i -lt $objects.Count; $i++) {
+                $offsets += $pdf.Length
+                $pdf += "$($i + 1) 0 obj`n$($objects[$i])`nendobj`n"
+            }
+            $xrefOffset = $pdf.Length
+            $pdf += "xref`n0 5`n0000000000 65535 f `n"
+            foreach ($offset in $offsets) { $pdf += ('{0:D10} 00000 n ' -f $offset) + "`n" }
+            $pdf += "trailer`n<< /Root 1 0 R /Size 5 >>`nstartxref`n$xrefOffset`n%%EOF`n"
+            [IO.File]::WriteAllBytes($Path, [Text.Encoding]::ASCII.GetBytes($pdf))
+        }
+
+        # Read only content streams actually referenced by the output page.
+        function Read-WatermarkFixtureContent {
+            param([string]$Path, [string]$QpdfPath)
+            $pages = Invoke-WatermarkProcess -Path $QpdfPath -Arguments @('--json', '--json-key=pages', $Path)
+            if ($pages.ExitCode -notin @(0, 3)) { throw "Cannot inspect PDF pages: $($pages.StdErr)" }
+            $pageData = $pages.StdOut | ConvertFrom-Json
+            if (@($pageData.pages).Count -ne 1 -or @($pageData.pages[0].contents).Count -ne 1) {
+                throw 'Expected one generated page with one referenced content stream.'
+            }
+            $reference = $pageData.pages[0].contents[0]
+            if ($reference -notmatch '^(\d+) (\d+) R$') { throw "Unexpected content reference: $reference" }
+            $objectArgument = '--show-object={0},{1}' -f $Matches[1], $Matches[2]
+            $stream = Invoke-WatermarkProcess -Path $QpdfPath -Arguments @($objectArgument, '--filtered-stream-data', $Path)
+            if ($stream.ExitCode -notin @(0, 3)) { throw "Cannot inspect PDF content: $($stream.StdErr)" }
+            return $stream.StdOut
+        }
+
+        $testsTmpRoot = (Resolve-Path -LiteralPath (Join-Path $projectRoot 'tests\tmp')).ProviderPath
+        $testsTmpPrefix = $testsTmpRoot.TrimEnd('\') + '\'
+        $zipTestRoot = [IO.Path]::GetFullPath((Join-Path $testsTmpRoot ('水印 ZIP (中文 &!) ' + [guid]::NewGuid().ToString('N'))))
+        if (-not $zipTestRoot.StartsWith($testsTmpPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing unsafe watermark ZIP test path: $zipTestRoot"
+        }
+        try {
+            Expand-Archive -LiteralPath $deliveryZip -DestinationPath $zipTestRoot
+            $zipToolRoot = Join-Path $zipTestRoot 'PDF权限处理工具_BAT版'
+            $zipBat = Join-Path $zipToolRoot 'PDF去水印工具.bat'
+            $zipCore = Join-Path $zipToolRoot 'watermark\watermark_core.exe'
+            $zipQpdf = Join-Path $zipToolRoot 'qpdf\bin\qpdf.exe'
+            Assert-True -Value (Test-DeliveryManifest -Root $zipToolRoot) -Name 'watermark extracted ZIP manifest covers exact file set and hashes'
+            $zipInputDir = Join-Path $zipTestRoot '输入 文件 (中文 &!)'
+            New-Item -ItemType Directory -Path $zipInputDir -Force | Out-Null
+            $zipInput = Join-Path $zipInputDir '标记水印 (1) &!.pdf'
+            New-MarkedWatermarkFixture -Path $zipInput
+            $fixtureContent = Read-WatermarkFixtureContent -Path $zipInput -QpdfPath $zipQpdf
+            Assert-True -Value ($fixtureContent -match '/Artifact << /Subtype /Watermark /Type /Pagination >> BDC') -Name 'ZIP fixture has explicit target watermark block'
+            Assert-True -Value ($fixtureContent -match '0 0 1 rg 10 10 40 40 re f') -Name 'ZIP fixture has separate blue body graphic'
+            $inputHash = (Get-FileHash -LiteralPath $zipInput -Algorithm SHA256).Hash
+            $inputTime = (Get-Item -LiteralPath $zipInput).LastWriteTimeUtc.Ticks
+            '' | & $zipBat '-NoPrompt' $zipInput
+            $zipBatExitCode = $LASTEXITCODE
+            Assert-Equal -Expected 0 -Actual $zipBatExitCode -Name 'watermark BAT from extracted ZIP exits zero'
+            $outputs = @(Get-ChildItem -LiteralPath $zipInputDir -Filter '*_去水印.pdf' -File)
+            Assert-Equal -Expected 1 -Actual $outputs.Count -Name 'watermark ZIP BAT creates exactly one output'
+            if ($outputs.Count -eq 1) {
+                $check = Invoke-WatermarkProcess -Path $zipQpdf -Arguments @('--check', $outputs[0].FullName)
+                Assert-True -Value ($check.ExitCode -in @(0, 3)) -Name 'watermark ZIP BAT output passes extracted qpdf check'
+                $pages = Invoke-WatermarkProcess -Path $zipQpdf -Arguments @('--show-npages', $outputs[0].FullName)
+                Assert-True -Value ($pages.ExitCode -in @(0, 3)) -Name 'watermark ZIP BAT page count command succeeds'
+                Assert-Equal -Expected '1' -Actual $pages.StdOut.Trim() -Name 'watermark ZIP BAT output has one page'
+                $outputContent = Read-WatermarkFixtureContent -Path $outputs[0].FullName -QpdfPath $zipQpdf
+                Assert-True -Value ($outputContent -notmatch '\bBDC\b') -Name 'watermark ZIP BAT output removes target BDC'
+                Assert-Equal -Expected 'q 0 0 1 rg 10 10 40 40 re f Q' -Actual (($outputContent -replace '\s+', ' ').Trim()) -Name 'watermark ZIP BAT preserves all body drawing operations'
+            }
+
+            $isolatedOutput = Join-Path $zipInputDir '独立核心 输出 (2) &!.pdf'
+            $oldPath = $env:PATH
+            $oldPythonHome = [Environment]::GetEnvironmentVariable('PYTHONHOME', 'Process')
+            $oldPythonPath = [Environment]::GetEnvironmentVariable('PYTHONPATH', 'Process')
+            try {
+                $env:PATH = Join-Path $env:SystemRoot 'System32'
+                [Environment]::SetEnvironmentVariable('PYTHONHOME', $null, 'Process')
+                [Environment]::SetEnvironmentVariable('PYTHONPATH', $null, 'Process')
+                $isolatedVersion = Invoke-WatermarkProcess -Path $zipCore -Arguments @('--version')
+                Assert-Equal -Expected 0 -Actual $isolatedVersion.ExitCode -Name 'ZIP core starts with System32-only PATH and no Python environment'
+                Assert-Equal -Expected "0.2.0`r`n" -Actual $isolatedVersion.StdOut -Name 'isolated ZIP core version is exactly 0.2.0'
+                $isolatedResult = Invoke-WatermarkProcess -Path $zipCore -Arguments @($zipInput, $isolatedOutput)
+                Assert-Equal -Expected 0 -Actual $isolatedResult.ExitCode -Name 'isolated ZIP core processes real fixture without Python'
+                $isolatedJson = $isolatedResult.StdOut | ConvertFrom-Json
+                Assert-Equal -Expected 'success' -Actual $isolatedJson.status -Name 'isolated ZIP core reports success'
+                Assert-Equal -Expected 1 -Actual $isolatedJson.pages -Name 'isolated ZIP core reports one page'
+                Assert-Equal -Expected 1 -Actual $isolatedJson.removed_blocks -Name 'isolated ZIP core removes one marked block'
+            }
+            finally {
+                $env:PATH = $oldPath
+                [Environment]::SetEnvironmentVariable('PYTHONHOME', $oldPythonHome, 'Process')
+                [Environment]::SetEnvironmentVariable('PYTHONPATH', $oldPythonPath, 'Process')
+            }
+            $isolatedContent = Read-WatermarkFixtureContent -Path $isolatedOutput -QpdfPath $zipQpdf
+            Assert-True -Value ($isolatedContent -notmatch '\bBDC\b') -Name 'isolated ZIP core output has no target BDC'
+            Assert-Equal -Expected 'q 0 0 1 rg 10 10 40 40 re f Q' -Actual (($isolatedContent -replace '\s+', ' ').Trim()) -Name 'isolated ZIP core preserves body drawing operations'
+            Assert-Equal -Expected $inputHash -Actual (Get-FileHash -LiteralPath $zipInput -Algorithm SHA256).Hash -Name 'watermark ZIP processing leaves input SHA256 unchanged'
+            Assert-Equal -Expected $inputTime -Actual (Get-Item -LiteralPath $zipInput).LastWriteTimeUtc.Ticks -Name 'watermark ZIP processing leaves input timestamp unchanged'
+            Assert-Equal -Expected 0 -Actual @(Get-ChildItem -LiteralPath $zipInputDir -Filter '*.wm.tmp.pdf' -Force).Count -Name 'watermark ZIP processing leaves no wm temporary PDF'
+        }
+        finally {
+            if (Test-Path -LiteralPath $zipTestRoot) {
+                $resolvedCleanup = (Resolve-Path -LiteralPath $zipTestRoot).ProviderPath
+                if (-not $resolvedCleanup.StartsWith($testsTmpPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                    -not $resolvedCleanup.Equals($zipTestRoot, [StringComparison]::OrdinalIgnoreCase) -or
+                    (Get-Item -LiteralPath $resolvedCleanup -Force).LinkType -in @('Junction', 'SymbolicLink')) {
+                    throw "Refusing unsafe watermark ZIP test cleanup: $resolvedCleanup"
+                }
+                Remove-Item -LiteralPath $resolvedCleanup -Recurse -Force
+            }
+        }
+    }
+}
 if ($script:failed -gt 0) { throw "$script:failed tests failed" }
 Write-Host "$script:passed tests passed" -ForegroundColor Cyan

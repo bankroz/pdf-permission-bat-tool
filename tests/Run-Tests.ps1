@@ -1,10 +1,42 @@
 ﻿[CmdletBinding()]
 param(
-    [switch]$DeliverySmokeTest
+    [switch]$DeliverySmokeTest,
+    [switch]$LibraryMode
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+
+function Test-DeliveryManifest {
+    param([string]$Root)
+
+    try {
+        $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+        $manifest = Join-Path $rootPath 'SHA256SUMS.txt'
+        if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return $false }
+        $rootPrefix = $rootPath + '\'
+        $manifestPaths = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($line in (Get-Content -LiteralPath $manifest)) {
+            if ($line -notmatch '^([A-F0-9]{64})  (.+)$') { return $false }
+            $expectedHash = $Matches[1]
+            $relativePath = $Matches[2]
+            $file = [IO.Path]::GetFullPath((Join-Path $rootPath $relativePath))
+            if ((-not $file.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+                (-not $manifestPaths.Add($relativePath)) -or
+                (-not (Test-Path -LiteralPath $file -PathType Leaf)) -or
+                ((Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash -ne $expectedHash)) {
+                return $false
+            }
+        }
+        $actualPaths = @(Get-ChildItem -LiteralPath $rootPath -Recurse -File |
+            Where-Object { $_.FullName -ne $manifest } |
+            ForEach-Object { $_.FullName.Substring($rootPath.Length + 1) } | Sort-Object)
+        return ($actualPaths -join "`n") -ceq (@($manifestPaths | Sort-Object) -join "`n")
+    }
+    catch { return $false }
+}
+
+if ($LibraryMode) { return }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $scriptPath = Join-Path $projectRoot 'src\tools\pdf_tool.ps1'
@@ -221,39 +253,23 @@ if ($DeliverySmokeTest) {
         Assert-True -Value (Test-Path -LiteralPath $deliveryReadme -PathType Leaf) -Name 'delivery contains usage guide'
         Assert-True -Value (Test-Path -LiteralPath $deliveryQpdf -PathType Leaf) -Name 'delivery contains qpdf executable'
         Assert-True -Value (Test-Path -LiteralPath $deliveryManifest -PathType Leaf) -Name 'delivery contains SHA-256 manifest'
+        foreach ($relativePath in @('PDF去水印工具.bat', 'tools\watermark_ui.ps1', 'watermark\watermark_core.exe', 'licenses\pypdf-LICENSE.txt', 'licenses\PyInstaller-COPYING.txt')) {
+            $deliveryFile = Join-Path $delivery $relativePath
+            $exists = Test-Path -LiteralPath $deliveryFile -PathType Leaf
+            Assert-True -Value ($exists -and (Get-Item -LiteralPath $deliveryFile).Length -gt 0) -Name "delivery contains nonempty $relativePath"
+        }
+        $deliveryCore = Join-Path $delivery 'watermark\watermark_core.exe'
+        if (Test-Path -LiteralPath $deliveryCore -PathType Leaf) {
+            $coreVersion = @(& $deliveryCore --version)
+            Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Name 'bundled watermark core starts'
+            Assert-True -Value ($coreVersion.Count -eq 1 -and $coreVersion[0] -ceq '0.2.0') -Name 'bundled watermark core version is exactly 0.2.0'
+        }
 
         $licenseFiles = @(Get-ChildItem -LiteralPath (Join-Path $delivery 'licenses') -File -ErrorAction SilentlyContinue)
         Assert-True -Value ($licenseFiles.Count -ge 3) -Name 'delivery contains qpdf license notices'
 
         if (Test-Path -LiteralPath $deliveryManifest -PathType Leaf) {
-            $manifestValid = $true
-            $manifestPaths = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
-            foreach ($line in (Get-Content -LiteralPath $deliveryManifest)) {
-                if ($line -notmatch '^([A-F0-9]{64})  (.+)$') {
-                    $manifestValid = $false
-                    break
-                }
-                $expectedHash = $Matches[1]
-                $relativePath = $Matches[2]
-                $manifestFile = [IO.Path]::GetFullPath((Join-Path $delivery $relativePath))
-                $deliveryPrefix = $delivery.TrimEnd('\') + '\'
-                if ((-not $manifestFile.StartsWith($deliveryPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
-                    (-not $manifestPaths.Add($relativePath)) -or
-                    (-not (Test-Path -LiteralPath $manifestFile -PathType Leaf)) -or
-                    ((Get-FileHash -Algorithm SHA256 -LiteralPath $manifestFile).Hash -ne $expectedHash)) {
-                    $manifestValid = $false
-                    break
-                }
-            }
-            $deliveryPaths = @(Get-ChildItem -LiteralPath $delivery -Recurse -File |
-                Where-Object { $_.FullName -ne $deliveryManifest } |
-                ForEach-Object { $_.FullName.Substring($delivery.Length + 1) } |
-                Sort-Object)
-            $manifestPathList = @($manifestPaths | Sort-Object)
-            if (($deliveryPaths -join "`n") -ne ($manifestPathList -join "`n")) {
-                $manifestValid = $false
-            }
-            Assert-True -Value $manifestValid -Name 'delivery manifest validates every file'
+            Assert-True -Value (Test-DeliveryManifest -Root $delivery) -Name 'delivery manifest validates every file'
         }
 
         if (Test-Path -LiteralPath $deliveryQpdf -PathType Leaf) {
@@ -289,36 +305,7 @@ if ($DeliverySmokeTest) {
                 $zipBat = Join-Path $zipToolRoot 'PDF权限处理工具.bat'
                 $zipManifest = Join-Path $zipToolRoot 'SHA256SUMS.txt'
 
-                $zipManifestValid = Test-Path -LiteralPath $zipManifest -PathType Leaf
-                $zipManifestPaths = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
-                if ($zipManifestValid) {
-                    foreach ($line in (Get-Content -LiteralPath $zipManifest)) {
-                        if ($line -notmatch '^([A-F0-9]{64})  (.+)$') {
-                            $zipManifestValid = $false
-                            break
-                        }
-                        $expectedHash = $Matches[1]
-                        $relativePath = $Matches[2]
-                        $zipManifestFile = [IO.Path]::GetFullPath((Join-Path $zipToolRoot $relativePath))
-                        $zipToolPrefix = $zipToolRoot.TrimEnd('\') + '\'
-                        if ((-not $zipManifestFile.StartsWith($zipToolPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
-                            (-not $zipManifestPaths.Add($relativePath)) -or
-                            (-not (Test-Path -LiteralPath $zipManifestFile -PathType Leaf)) -or
-                            ((Get-FileHash -Algorithm SHA256 -LiteralPath $zipManifestFile).Hash -ne $expectedHash)) {
-                            $zipManifestValid = $false
-                            break
-                        }
-                    }
-                    $zipActualPaths = @(Get-ChildItem -LiteralPath $zipToolRoot -Recurse -File |
-                        Where-Object { $_.FullName -ne $zipManifest } |
-                        ForEach-Object { $_.FullName.Substring($zipToolRoot.Length + 1) } |
-                        Sort-Object)
-                    $zipManifestPathList = @($zipManifestPaths | Sort-Object)
-                    if (($zipActualPaths -join "`n") -ne ($zipManifestPathList -join "`n")) {
-                        $zipManifestValid = $false
-                    }
-                }
-                Assert-True -Value $zipManifestValid -Name 'extracted ZIP manifest validates exact file set and bytes'
+                Assert-True -Value (Test-DeliveryManifest -Root $zipToolRoot) -Name 'extracted ZIP manifest validates exact file set and bytes'
 
                 $zipInputDir = Join-Path $zipTestRoot 'input (中文 &!)'
                 New-Item -ItemType Directory -Force -Path $zipInputDir | Out-Null

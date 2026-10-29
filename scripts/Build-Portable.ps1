@@ -8,6 +8,17 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $fetchScript = Join-Path $PSScriptRoot 'Fetch-Qpdf.ps1'
 & $fetchScript
 
+$coreBuildOutput = @(& (Join-Path $PSScriptRoot 'Build-WatermarkCore.ps1'))
+if ($coreBuildOutput.Count -eq 0) {
+    throw '水印核心构建未返回 EXE 路径。'
+}
+$watermarkCore = [string]$coreBuildOutput[-1]
+if ([string]::IsNullOrWhiteSpace($watermarkCore) -or
+    -not (Test-Path -LiteralPath $watermarkCore -PathType Leaf) -or
+    (Get-Item -LiteralPath $watermarkCore).Length -le 0) {
+    throw "水印核心构建结果缺失或为空：$watermarkCore"
+}
+
 $distRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'dist'))
 $delivery = [IO.Path]::GetFullPath((Join-Path $distRoot 'PDF权限处理工具_BAT版'))
 $expectedPrefix = $distRoot.TrimEnd('\') + '\'
@@ -22,11 +33,17 @@ if (Test-Path -LiteralPath $delivery) {
 $toolsDir = Join-Path $delivery 'tools'
 $qpdfDir = Join-Path $delivery 'qpdf'
 $licensesDir = Join-Path $delivery 'licenses'
-New-Item -ItemType Directory -Force -Path $toolsDir, $qpdfDir, $licensesDir | Out-Null
+$watermarkDir = Join-Path $delivery 'watermark'
+New-Item -ItemType Directory -Force -Path $toolsDir, $qpdfDir, $licensesDir, $watermarkDir | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $projectRoot 'src\PDF权限处理工具.bat') -Destination $delivery
 Copy-Item -LiteralPath (Join-Path $projectRoot 'src\tools\pdf_tool.ps1') -Destination $toolsDir
+Copy-Item -LiteralPath (Join-Path $projectRoot 'src\PDF去水印工具.bat') -Destination $delivery
+Copy-Item -LiteralPath (Join-Path $projectRoot 'src\tools\watermark_ui.ps1') -Destination $toolsDir
+Copy-Item -LiteralPath $watermarkCore -Destination (Join-Path $watermarkDir 'watermark_core.exe')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'src\使用说明.txt') -Destination $delivery
+Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\pypdf-LICENSE.txt') -Destination $licensesDir
+Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\PyInstaller-COPYING.txt') -Destination $licensesDir
 
 $vendorRoot = Join-Path $projectRoot 'vendor\qpdf-12.4.2-msvc64'
 $vendorBin = Join-Path $vendorRoot 'bin'
@@ -48,6 +65,12 @@ if ($LASTEXITCODE -ne 0) {
     throw '无法读取 qpdf 版权信息。'
 }
 $copyrightOutput | Set-Content -LiteralPath (Join-Path $licensesDir 'qpdf-copyright.txt') -Encoding UTF8
+
+$bundledCore = Join-Path $watermarkDir 'watermark_core.exe'
+$coreVersionOutput = @(& $bundledCore --version)
+if ($LASTEXITCODE -ne 0 -or $coreVersionOutput.Count -ne 1 -or $coreVersionOutput[0] -cne '0.2.0') {
+    throw '便携目录中的 watermark_core.exe 无法启动，或版本输出并非精确的 0.2.0。'
+}
 
 $manifestPath = Join-Path $delivery 'SHA256SUMS.txt'
 $manifestLines = Get-ChildItem -LiteralPath $delivery -Recurse -File |
