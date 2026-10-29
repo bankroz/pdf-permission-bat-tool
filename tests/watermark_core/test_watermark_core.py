@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ContentStream, DecodedStreamObject, NameObject
+from pypdf.generic import ArrayObject, ContentStream, DecodedStreamObject, NameObject
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -92,6 +92,45 @@ class WatermarkCoreTests(unittest.TestCase):
         for page in range(2):
             self.assertEqual(self.output_operations(page), self.operations(BODY))
 
+    def test_preserves_body_stream_shared_with_an_unchanged_page(self):
+        writer = PdfWriter()
+        first = writer.add_blank_page(width=100, height=100)
+        second = writer.add_blank_page(width=100, height=100)
+        watermark = DecodedStreamObject()
+        watermark.set_data(WATERMARK)
+        body = DecodedStreamObject()
+        body.set_data(BODY)
+        body_reference = writer._add_object(body)
+        first[NameObject("/Contents")] = ArrayObject([
+            writer._add_object(watermark), body_reference,
+        ])
+        second[NameObject("/Contents")] = body_reference
+        writer.write(self.input)
+
+        result = self.process()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual((result["pages"], result["removed_blocks"]), (2, 1))
+        output = PdfReader(self.output)
+        self.assertIsNotNone(output.pages[1].get_contents())
+        for page in range(2):
+            self.assertEqual(self.output_operations(page), self.operations(BODY))
+
+    def test_counts_both_pages_that_share_the_entire_watermark_stream(self):
+        writer = PdfWriter()
+        shared = DecodedStreamObject()
+        shared.set_data(WATERMARK + BODY)
+        reference = writer._add_object(shared)
+        for _ in range(2):
+            page = writer.add_blank_page(width=100, height=100)
+            page[NameObject("/Contents")] = reference
+        writer.write(self.input)
+
+        result = self.process()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual((result["pages"], result["removed_blocks"]), (2, 2))
+        for page in range(2):
+            self.assertEqual(self.output_operations(page), self.operations(BODY))
+
     def test_preserves_header_artifact(self):
         header = b"/Artifact << /Subtype /Header >> BDC\n" + MARK + b"EMC\n"
         self.make_pdf(header + WATERMARK + BODY)
@@ -164,6 +203,39 @@ class WatermarkCoreTests(unittest.TestCase):
         self.make_pdf(WATERMARK + BODY)
         self.output = self.output.parent / "missing-directory" / "out.pdf"
         self.assert_no_output("failed")
+
+    def test_existing_output_is_preserved_and_returns_failed(self):
+        self.make_pdf(WATERMARK + BODY)
+        original = b"existing output must not be replaced"
+        self.output.write_bytes(original)
+
+        self.assertEqual(self.process()["status"], "failed")
+        self.assertEqual(self.output.read_bytes(), original)
+
+    def test_existing_output_is_rejected_even_without_a_watermark(self):
+        self.make_pdf(BODY)
+        original = b"existing output with unsupported input"
+        self.output.write_bytes(original)
+
+        self.assertEqual(self.process()["status"], "failed")
+        self.assertEqual(self.output.read_bytes(), original)
+
+    def test_existing_output_is_preserved_when_writer_would_fail(self):
+        self.make_pdf(WATERMARK + BODY)
+        original = b"existing output must survive a write failure"
+        self.output.write_bytes(original)
+        writes = []
+
+        def interrupted_write(writer, destination):
+            writes.append(True)
+            destination.write(b"partial replacement")
+            raise OSError("simulated interrupted write")
+
+        with patch.object(PdfWriter, "write", interrupted_write):
+            self.assertEqual(self.process()["status"], "failed")
+        self.assertTrue(self.output.exists(), "existing output was deleted")
+        self.assertEqual(self.output.read_bytes(), original)
+        self.assertEqual(writes, [], "existing output must be rejected before writing")
 
     def test_same_input_and_output_is_rejected_without_changing_input(self):
         self.make_pdf(WATERMARK + BODY)

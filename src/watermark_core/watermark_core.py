@@ -7,7 +7,7 @@ import sys
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
-from pypdf.generic import ContentStream, DictionaryObject, NameObject
+from pypdf.generic import ContentStream, DecodedStreamObject, DictionaryObject, NameObject
 
 
 VERSION = "0.2.0"
@@ -62,6 +62,8 @@ def process_pdf(input_path, output_path):
             output.exists() and source_path.samefile(output)
         ):
             raise ValueError("输入与输出不能是同一文件")
+        if output.exists():
+            raise FileExistsError("输出文件已存在")
         with source_path.open("rb") as source:
             reader = PdfReader(source, strict=False)
             if reader.is_encrypted and reader.decrypt("") == 0:
@@ -78,11 +80,15 @@ def process_pdf(input_path, output_path):
                 retained, removed = _remove_watermarks(stream.operations)
                 if removed:
                     stream.operations = retained
-                    page.replace_contents(stream)
+                    # Old content objects may be shared by other pages. Replace
+                    # this page's reference without changing any shared object.
+                    replacement = DecodedStreamObject()
+                    replacement.set_data(stream.get_data())
+                    page[NameObject("/Contents")] = writer._add_object(replacement)
                     removed_blocks += removed
             if not removed_blocks:
                 return {"status": "unsupported", "message": "未找到明确标记的水印块", "pages": pages, "removed_blocks": 0}
-            with output.open("wb") as destination:
+            with output.open("xb") as destination:
                 output_started = True
                 writer.write(destination)
         return {"status": "success", "message": "已删除明确标记的水印块", "pages": pages, "removed_blocks": removed_blocks}
