@@ -16,11 +16,12 @@ EXIT_CODES = {"success": 0, "unsupported": 10, "encrypted": 11, "invalid": 12, "
 # q/Q does not restore text matrices or the current path. Deliberately reject
 # text, path, clipping and unknown operators inside non-tail candidates, even
 # when they appear balanced. pypdf 6.10.2 parses BI...EI as b"INLINE IMAGE".
+# BX/EX are excluded because compatibility scopes can cross block boundaries.
 ISOLATED_OPERATORS = frozenset({
     b"q", b"Q", b"cm", b"w", b"J", b"j", b"M", b"d", b"ri", b"i", b"gs",
     b"CS", b"cs", b"SC", b"SCN", b"sc", b"scn", b"G", b"g", b"RG", b"rg",
     b"K", b"k", b"Do", b"sh", b"BDC", b"BMC", b"EMC", b"MP", b"DP",
-    b"BX", b"EX", b"INLINE IMAGE",
+    b"INLINE IMAGE",
 })
 PATH_CONSTRUCTION_OPERATORS = frozenset(b"m l c v y h re".split())
 PATH_ENDING_OPERATORS = frozenset(b"n S s f F f* B B* b b*".split())

@@ -208,6 +208,20 @@ class WatermarkCoreTests(unittest.TestCase):
         self.assertEqual(self.input.read_bytes(), original)
         self.assertEqual(PdfReader(self.input).pages[0].get_contents().get_data(), content)
 
+    def test_compatibility_scope_crossing_candidate_boundary_is_rejected(self):
+        for index, (prefix, inner, suffix) in enumerate((
+            (b"BX\n", b"EX\n", BODY),
+            (b"", b"BX\n", BODY + b"EX\n"),
+        )):
+            with self.subTest(inner=inner):
+                self.output = self.output.with_name(f"compatibility-{index}.pdf")
+                content = prefix + START + b"q\n" + inner + b"Q\nEMC\n" + suffix
+                self.make_pdf(content)
+                original = self.input.read_bytes()
+                self.assert_no_output("unsupported")
+                self.assertEqual(self.input.read_bytes(), original)
+                self.assertEqual(PdfReader(self.input).pages[0].get_contents().get_data(), content)
+
     def test_external_text_object_rejects_an_otherwise_safe_middle_block(self):
         self.make_pdf(b"BT\n" + WATERMARK + b"(BODY) Tj ET\n")
         self.assert_no_output("unsupported")
