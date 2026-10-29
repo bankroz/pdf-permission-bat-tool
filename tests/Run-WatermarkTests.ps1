@@ -335,6 +335,43 @@ Assert-Equal -Expected 'Failed' -Actual $exhaustedResult.Status -Name 'temporary
 Assert-True -Value ($script:collisionAttempts -gt 1 -and $script:collisionAttempts -le 16) -Name 'temporary collision retries are bounded'
 Assert-True -Value ($exhaustedResult.Message -match '临时') -Name 'temporary collision exhaustion explains failure'
 Assert-Equal -Expected $false -Actual ([IO.File]::Exists($exhaustedInput + '.temp-path.txt')) -Name 'core is not started when all temporary candidates are occupied'
+
+# A core-call exception after file creation still cannot establish UI ownership.
+$exceptionInput = New-TestInput -Name 'unowned core exception'
+$originalCore = (Get-Command Invoke-WatermarkCore).ScriptBlock
+$script:exceptionTempPath = ''
+$script:exceptionTempBytes = [guid]::NewGuid().ToByteArray()
+Set-Item -Path Function:\Invoke-WatermarkCore -Value {
+    param([string]$CorePath, [string]$InputPath, [string]$OutputPath)
+    $script:exceptionTempPath = $OutputPath
+    [IO.File]::WriteAllBytes($OutputPath, $script:exceptionTempBytes)
+    throw 'Injected exception after unowned temporary file creation.'
+}
+try {
+    $exceptionResult = Invoke-WatermarkFile -InputPath $exceptionInput -CorePath $fakeExe -QpdfPath $qpdfExe
+    Assert-Equal -Expected 'Failed' -Actual $exceptionResult.Status -Name 'exception after temporary file creation returns Failed'
+    Assert-Equal -Expected '' -Actual $exceptionResult.OutputPath -Name 'core-call exception publishes no output'
+    Assert-True -Value ($exceptionResult.Details -match 'Injected exception after unowned temporary file creation') -Name 'core-call exception reaches per-file error boundary'
+    Assert-True -Value ([bool]$script:exceptionTempPath) -Name 'core-call exception records exact temporary path'
+    Assert-True -Value ([IO.File]::Exists($script:exceptionTempPath)) -Name 'unconfirmed temporary file survives core-call exception'
+    if ([IO.File]::Exists($script:exceptionTempPath)) {
+        Assert-Equal -Expected ([Convert]::ToBase64String($script:exceptionTempBytes)) -Actual ([Convert]::ToBase64String([IO.File]::ReadAllBytes($script:exceptionTempPath))) -Name 'core-call exception preserves unconfirmed temporary bytes'
+    }
+}
+finally {
+    Set-Item -Path Function:\Invoke-WatermarkCore -Value $originalCore
+    if ($script:exceptionTempPath) {
+        $cleanupPath = [IO.Path]::GetFullPath($script:exceptionTempPath)
+        $testTmpPrefix = [IO.Path]::GetFullPath((Join-Path $projectRoot 'tests\tmp')).TrimEnd('\') + '\'
+        if (-not $cleanupPath.StartsWith($testTmpPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing unsafe exception fixture cleanup: $cleanupPath"
+        }
+        Remove-TestCoreTemporaryFile -Path $cleanupPath
+    }
+}
+Assert-Equal -Expected $originalCore.ToString() -Actual (Get-Command Invoke-WatermarkCore).ScriptBlock.ToString() -Name 'original core function restored after exception fixture'
+Assert-Equal -Expected $false -Actual ([IO.File]::Exists($script:exceptionTempPath)) -Name 'test safely cleans its own exception fixture'
+
 $invalidPath = 'illegal' + [char]0 + '.pdf'
 $pathResult = Invoke-WatermarkFile -InputPath $invalidPath -CorePath $fakeExe -QpdfPath $qpdfExe
 Assert-Equal -Expected 'Failed' -Actual $pathResult.Status -Name 'illegal path preparation exception converted to Failed'
