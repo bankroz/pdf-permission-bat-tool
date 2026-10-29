@@ -172,6 +172,16 @@ $brokenQpdf = Join-Path $integration 'broken-qpdf.exe'
 $brokenQpdfExitCode = Invoke-Main -InputFiles @($plain) -NoPrompt -QpdfPath $brokenQpdf
 Assert-Equal -Expected 2 -Actual $brokenQpdfExitCode -Name 'unstartable qpdf stops batch'
 
+$wrongVersionQpdf = Join-Path $integration 'wrong-version-qpdf.cmd'
+$wrongVersionQpdfLines = @(
+    '@echo off',
+    'echo qpdf version 1.0.0',
+    'exit /b 0'
+)
+[IO.File]::WriteAllText($wrongVersionQpdf, ($wrongVersionQpdfLines -join "`r`n"), [Text.Encoding]::ASCII)
+$wrongVersionExitCode = Invoke-Main -InputFiles @($plain) -NoPrompt -QpdfPath $wrongVersionQpdf
+Assert-Equal -Expected 2 -Actual $wrongVersionExitCode -Name 'wrong qpdf version stops batch'
+
 $beforeExceptionalBatch = @(Get-ChildItem -LiteralPath $integration -Filter '普通 文件_可注释*.pdf').Count
 $exceptionEscaped = $false
 $exceptionalBatchExitCode = $null
@@ -217,18 +227,31 @@ if ($DeliverySmokeTest) {
 
         if (Test-Path -LiteralPath $deliveryManifest -PathType Leaf) {
             $manifestValid = $true
-            foreach ($line in Get-Content -LiteralPath $deliveryManifest) {
+            $manifestPaths = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+            foreach ($line in (Get-Content -LiteralPath $deliveryManifest)) {
                 if ($line -notmatch '^([A-F0-9]{64})  (.+)$') {
                     $manifestValid = $false
                     break
                 }
                 $expectedHash = $Matches[1]
-                $manifestFile = Join-Path $delivery $Matches[2]
-                if ((-not (Test-Path -LiteralPath $manifestFile -PathType Leaf)) -or
+                $relativePath = $Matches[2]
+                $manifestFile = [IO.Path]::GetFullPath((Join-Path $delivery $relativePath))
+                $deliveryPrefix = $delivery.TrimEnd('\') + '\'
+                if ((-not $manifestFile.StartsWith($deliveryPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+                    (-not $manifestPaths.Add($relativePath)) -or
+                    (-not (Test-Path -LiteralPath $manifestFile -PathType Leaf)) -or
                     ((Get-FileHash -Algorithm SHA256 -LiteralPath $manifestFile).Hash -ne $expectedHash)) {
                     $manifestValid = $false
                     break
                 }
+            }
+            $deliveryPaths = @(Get-ChildItem -LiteralPath $delivery -Recurse -File |
+                Where-Object { $_.FullName -ne $deliveryManifest } |
+                ForEach-Object { $_.FullName.Substring($delivery.Length + 1) } |
+                Sort-Object)
+            $manifestPathList = @($manifestPaths | Sort-Object)
+            if (($deliveryPaths -join "`n") -ne ($manifestPathList -join "`n")) {
+                $manifestValid = $false
             }
             Assert-True -Value $manifestValid -Name 'delivery manifest validates every file'
         }
@@ -253,22 +276,67 @@ if ($DeliverySmokeTest) {
             } | Sort-Object)
             Assert-Equal -Expected ($expectedZipEntries -join "`n") -Actual ($zipFileEntries -join "`n") -Name 'ZIP contains exact delivery file set'
 
-            $zipTestRoot = Join-Path $projectRoot ('tests\tmp\zip acceptance ' + [guid]::NewGuid().ToString('N'))
-            Expand-Archive -LiteralPath $deliveryZip -DestinationPath $zipTestRoot
-            $zipToolRoot = Join-Path $zipTestRoot 'PDF权限处理工具_BAT版'
-            $zipQpdf = Join-Path $zipToolRoot 'qpdf\bin\qpdf.exe'
-            $zipBat = Join-Path $zipToolRoot 'PDF权限处理工具.bat'
-            $zipInputDir = Join-Path $zipTestRoot 'input (中文 &!)'
-            New-Item -ItemType Directory -Force -Path $zipInputDir | Out-Null
-            $zipInput = Join-Path $zipInputDir 'ZIP BAT 验收 (1) &!.pdf'
-            & $zipQpdf '--empty' $zipInput
-            $zipFixtureExitCode = $LASTEXITCODE
-            '' | & $zipBat '-NoPrompt' $zipInput
-            $zipBatExitCode = $LASTEXITCODE
-            $zipOutput = @(Get-ChildItem -LiteralPath $zipInputDir -Filter '*_可注释.pdf' -File)
-            Assert-Equal -Expected 0 -Actual $zipFixtureExitCode -Name 'ZIP qpdf creates acceptance fixture'
-            Assert-Equal -Expected 0 -Actual $zipBatExitCode -Name 'BAT runs from extracted ZIP'
-            Assert-Equal -Expected 1 -Actual $zipOutput.Count -Name 'BAT from ZIP creates output for special path'
+            $testsTmpRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'tests\tmp'))
+            $zipTestRoot = [IO.Path]::GetFullPath((Join-Path $testsTmpRoot ('zip acceptance ' + [guid]::NewGuid().ToString('N'))))
+            $testsTmpPrefix = $testsTmpRoot.TrimEnd('\') + '\'
+            if (-not $zipTestRoot.StartsWith($testsTmpPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Refusing unsafe ZIP test path: $zipTestRoot"
+            }
+            try {
+                Expand-Archive -LiteralPath $deliveryZip -DestinationPath $zipTestRoot
+                $zipToolRoot = Join-Path $zipTestRoot 'PDF权限处理工具_BAT版'
+                $zipQpdf = Join-Path $zipToolRoot 'qpdf\bin\qpdf.exe'
+                $zipBat = Join-Path $zipToolRoot 'PDF权限处理工具.bat'
+                $zipManifest = Join-Path $zipToolRoot 'SHA256SUMS.txt'
+
+                $zipManifestValid = Test-Path -LiteralPath $zipManifest -PathType Leaf
+                $zipManifestPaths = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+                if ($zipManifestValid) {
+                    foreach ($line in (Get-Content -LiteralPath $zipManifest)) {
+                        if ($line -notmatch '^([A-F0-9]{64})  (.+)$') {
+                            $zipManifestValid = $false
+                            break
+                        }
+                        $expectedHash = $Matches[1]
+                        $relativePath = $Matches[2]
+                        $zipManifestFile = [IO.Path]::GetFullPath((Join-Path $zipToolRoot $relativePath))
+                        $zipToolPrefix = $zipToolRoot.TrimEnd('\') + '\'
+                        if ((-not $zipManifestFile.StartsWith($zipToolPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+                            (-not $zipManifestPaths.Add($relativePath)) -or
+                            (-not (Test-Path -LiteralPath $zipManifestFile -PathType Leaf)) -or
+                            ((Get-FileHash -Algorithm SHA256 -LiteralPath $zipManifestFile).Hash -ne $expectedHash)) {
+                            $zipManifestValid = $false
+                            break
+                        }
+                    }
+                    $zipActualPaths = @(Get-ChildItem -LiteralPath $zipToolRoot -Recurse -File |
+                        Where-Object { $_.FullName -ne $zipManifest } |
+                        ForEach-Object { $_.FullName.Substring($zipToolRoot.Length + 1) } |
+                        Sort-Object)
+                    $zipManifestPathList = @($zipManifestPaths | Sort-Object)
+                    if (($zipActualPaths -join "`n") -ne ($zipManifestPathList -join "`n")) {
+                        $zipManifestValid = $false
+                    }
+                }
+                Assert-True -Value $zipManifestValid -Name 'extracted ZIP manifest validates exact file set and bytes'
+
+                $zipInputDir = Join-Path $zipTestRoot 'input (中文 &!)'
+                New-Item -ItemType Directory -Force -Path $zipInputDir | Out-Null
+                $zipInput = Join-Path $zipInputDir 'ZIP BAT 验收 (1) &!.pdf'
+                & $zipQpdf '--empty' $zipInput
+                $zipFixtureExitCode = $LASTEXITCODE
+                '' | & $zipBat '-NoPrompt' $zipInput
+                $zipBatExitCode = $LASTEXITCODE
+                $zipOutput = @(Get-ChildItem -LiteralPath $zipInputDir -Filter '*_可注释.pdf' -File)
+                Assert-Equal -Expected 0 -Actual $zipFixtureExitCode -Name 'ZIP qpdf creates acceptance fixture'
+                Assert-Equal -Expected 0 -Actual $zipBatExitCode -Name 'BAT runs from extracted ZIP'
+                Assert-Equal -Expected 1 -Actual $zipOutput.Count -Name 'BAT from ZIP creates output for special path'
+            }
+            finally {
+                if (Test-Path -LiteralPath $zipTestRoot) {
+                    Remove-Item -LiteralPath $zipTestRoot -Recurse -Force
+                }
+            }
         }
     }
 }

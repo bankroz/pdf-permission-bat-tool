@@ -57,12 +57,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-Portable
 
 ## 测试
 
+先运行上述构建命令，生成 `vendor/` 和 `dist/`，再执行：
+
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1 -DeliverySmokeTest
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-FetchIntegrity.ps1
 ```
 
-测试覆盖普通 PDF、权限限制 PDF、需打开密码 PDF、损坏 PDF、qpdf 警告码、写入权限错误、同名递增、中文和 shell 特殊字符路径、原件不变、批次隔离、依赖篡改恢复、清单验证，以及从解压 ZIP 中实际运行 BAT。
+测试覆盖普通 PDF、权限限制 PDF、需打开密码 PDF、损坏 PDF、qpdf 警告码、写入权限错误映射、同名递增、中文和 shell 特殊字符路径、原件不变、批次隔离、依赖篡改恢复、清单验证，以及从解压 ZIP 中实际运行 BAT。
 
 ## 第三方软件
 
