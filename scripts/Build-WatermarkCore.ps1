@@ -4,6 +4,18 @@ param()
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+$expectedRuntime = 'CPython 3.10.11 x64'
+$runtimeProbe = "import sys, struct; ok = sys.implementation.name == 'cpython' and sys.version_info == (3, 10, 11, 'final', 0) and struct.calcsize('P') == 8; print('CPython 3.10.11 x64' if ok else 'unsupported runtime'); sys.exit(0 if ok else 1)"
+try {
+    $runtimeOutput = @(& py -3.10 -c $runtimeProbe 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $runtimeOutput.Count -ne 1 -or $runtimeOutput[0] -cne $expectedRuntime) {
+        throw '解释器版本、位数或检查输出不符合要求。'
+    }
+}
+catch {
+    throw "构建固定要求CPython 3.10.11 x64；解释器检查失败：$($_.Exception.Message)"
+}
+
 $directRequirements = Join-Path $PSScriptRoot 'requirements-watermark-build.txt'
 $requirements = Join-Path $PSScriptRoot 'requirements-watermark-lock.txt'
 $directLines = @(Get-Content -LiteralPath $directRequirements)
