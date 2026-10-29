@@ -12,7 +12,9 @@ $ErrorActionPreference = 'Stop'
 
 function New-ProcessResult {
     param(
-        [Parameter(Mandatory)][string]$Status,
+        [Parameter(Mandatory)]
+        [ValidateSet('Valid', 'Success', 'Warning', 'Failed', 'Skipped')]
+        [string]$Status,
         [Parameter(Mandatory)][string]$InputPath,
         [string]$OutputPath = '',
         [Parameter(Mandatory)][string]$Message,
@@ -85,19 +87,22 @@ function Invoke-PdfCopy {
         [Parameter(Mandatory)][string]$QpdfPath
     )
 
-    $validation = Test-PdfInputPath -Path $InputPath
-    if (-not $validation.IsValid) {
-        return $validation
-    }
-
-    $fullInput = $validation.InputPath
-    $finalPath = Get-UniqueOutputPath -InputPath $fullInput
-    $directory = [IO.Path]::GetDirectoryName($fullInput)
-    $stem = [IO.Path]::GetFileNameWithoutExtension($fullInput)
-    $tempName = '.{0}.{1}.tmp.pdf' -f $stem, [guid]::NewGuid().ToString('N')
-    $tempPath = Join-Path $directory $tempName
+    $fullInput = $InputPath
+    $tempPath = $null
 
     try {
+        $validation = Test-PdfInputPath -Path $InputPath
+        if (-not $validation.IsValid) {
+            return $validation
+        }
+
+        $fullInput = $validation.InputPath
+        $finalPath = Get-UniqueOutputPath -InputPath $fullInput
+        $directory = [IO.Path]::GetDirectoryName($fullInput)
+        $stem = [IO.Path]::GetFileNameWithoutExtension($fullInput)
+        $tempName = '.{0}.{1}.tmp.pdf' -f $stem, [guid]::NewGuid().ToString('N')
+        $tempPath = Join-Path $directory $tempName
+
         $previousErrorActionPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
@@ -136,7 +141,7 @@ function Invoke-PdfCopy {
             -Message '处理过程中发生错误，未修改原文件。' -Details $_.Exception.Message
     }
     finally {
-        if (Test-Path -LiteralPath $tempPath) {
+        if ($tempPath -and (Test-Path -LiteralPath $tempPath)) {
             Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
         }
     }
@@ -194,18 +199,33 @@ function Resolve-BundledQpdf {
     }
 
     $toolRoot = Split-Path -Parent $PSScriptRoot
-    $qpdfRoot = Join-Path $toolRoot 'qpdf'
-    if (-not (Test-Path -LiteralPath $qpdfRoot -PathType Container)) {
-        return $null
-    }
-
-    $qpdfExe = Get-ChildItem -LiteralPath $qpdfRoot -Filter qpdf.exe -Recurse -File |
-        Select-Object -First 1
-    if ($qpdfExe) {
-        return $qpdfExe.FullName
+    $qpdfExe = Join-Path $toolRoot 'qpdf\bin\qpdf.exe'
+    if (Test-Path -LiteralPath $qpdfExe -PathType Leaf) {
+        return [IO.Path]::GetFullPath($qpdfExe)
     }
 
     return $null
+}
+
+function Test-QpdfExecutable {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $versionLines = @(& $Path '--version' 2>&1 | ForEach-Object { $_.ToString() })
+        $exitCode = $LASTEXITCODE
+    }
+    catch {
+        return [pscustomobject]@{ IsValid = $false; Details = $_.Exception.Message }
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    $versionText = $versionLines -join [Environment]::NewLine
+    $isExpectedVersion = $exitCode -eq 0 -and $versionText -match '(?m)^qpdf version 12\.4\.2\b'
+    return [pscustomobject]@{ IsValid = $isExpectedVersion; Details = $versionText }
 }
 
 function Show-Result {
@@ -215,7 +235,12 @@ function Show-Result {
         [Parameter(Mandatory)][int]$Total
     )
 
-    $name = [IO.Path]::GetFileName($Result.InputPath)
+    try {
+        $name = [IO.Path]::GetFileName($Result.InputPath)
+    }
+    catch {
+        $name = '（无法解析的输入路径）'
+    }
     switch ($Result.Status) {
         'Success' {
             Write-Host "[$Index/$Total] 成功：$name -> $($Result.OutputPath)" -ForegroundColor Green
@@ -228,9 +253,12 @@ function Show-Result {
             Write-Host "[$Index/$Total] 失败：$name" -ForegroundColor Red
             Write-Host "  $($Result.Message)" -ForegroundColor Red
         }
-        default {
+        'Skipped' {
             Write-Host "[$Index/$Total] 跳过：$name" -ForegroundColor DarkYellow
             Write-Host "  $($Result.Message)" -ForegroundColor DarkYellow
+        }
+        default {
+            throw "未知处理状态：$($Result.Status)"
         }
     }
 }
@@ -286,6 +314,12 @@ function Invoke-Main {
         return 2
     }
 
+    $qpdfHealth = Test-QpdfExecutable -Path $resolvedQpdf
+    if (-not $qpdfHealth.IsValid) {
+        Write-Host '工具文件不完整：qpdf.exe 无法启动或版本不正确。请重新解压完整目录。' -ForegroundColor Red
+        return 2
+    }
+
     $paths = @($InputFiles | Where-Object { $_ })
     if ($paths.Count -eq 0) {
         $paths = @(Select-PdfFiles)
@@ -302,9 +336,20 @@ function Invoke-Main {
 
     $results = New-Object System.Collections.Generic.List[object]
     for ($index = 0; $index -lt $paths.Count; $index++) {
-        $result = Invoke-PdfCopy -InputPath $paths[$index] -QpdfPath $resolvedQpdf
+        try {
+            $result = Invoke-PdfCopy -InputPath $paths[$index] -QpdfPath $resolvedQpdf
+        }
+        catch {
+            $result = New-ProcessResult -Status 'Failed' -InputPath $paths[$index] `
+                -Message '处理过程中发生错误，未修改原文件。' -Details $_.Exception.Message
+        }
         $results.Add($result)
-        Show-Result -Result $result -Index ($index + 1) -Total $paths.Count
+        try {
+            Show-Result -Result $result -Index ($index + 1) -Total $paths.Count
+        }
+        catch {
+            Write-Host "[$($index + 1)/$($paths.Count)] 失败：无法显示该输入路径。" -ForegroundColor Red
+        }
     }
 
     Show-Summary -Results $results.ToArray() -NoPrompt:$NoPrompt

@@ -46,6 +46,9 @@ Assert-Equal -Expected (Join-Path $scratch '中文 & 文件!_可注释.pdf') -Ac
 [IO.File]::WriteAllBytes($first, [byte[]](1))
 $second = Get-UniqueOutputPath -InputPath $input
 Assert-Equal -Expected (Join-Path $scratch '中文 & 文件!_可注释_2.pdf') -Actual $second -Name 'numbered output name'
+[IO.File]::WriteAllBytes($second, [byte[]](1))
+$third = Get-UniqueOutputPath -InputPath $input
+Assert-Equal -Expected (Join-Path $scratch '中文 & 文件!_可注释_3.pdf') -Actual $third -Name 'third output name'
 
 $valid = Test-PdfInputPath -Path $input
 Assert-True -Value $valid.IsValid -Name 'valid PDF path accepted'
@@ -57,6 +60,15 @@ Assert-Equal -Expected 'Skipped' -Actual $invalid.Status -Name 'non-PDF skipped'
 
 $missing = Test-PdfInputPath -Path (Join-Path $scratch 'missing.pdf')
 Assert-Equal -Expected 'Skipped' -Actual $missing.Status -Name 'missing file skipped'
+
+$invalidStatusRejected = $false
+try {
+    New-ProcessResult -Status 'Typo' -InputPath $input -Message 'invalid status' | Out-Null
+}
+catch {
+    $invalidStatusRejected = $true
+}
+Assert-True -Value $invalidStatusRejected -Name 'unknown result status rejected'
 
 $powerShellBytes = [IO.File]::ReadAllBytes($scriptPath)
 $hasUtf8Bom = ($powerShellBytes.Length -ge 3) -and
@@ -124,6 +136,28 @@ Set-Content -LiteralPath $broken -Value 'not a PDF'
 $brokenResult = Invoke-PdfCopy -InputPath $broken -QpdfPath $qpdf.FullName
 Assert-Equal -Expected 'Failed' -Actual $brokenResult.Status -Name 'corrupt PDF rejected'
 
+$warningQpdf = Join-Path $integration 'warning-qpdf.cmd'
+$warningQpdfLines = @(
+    '@echo off',
+    'copy /b "%~2" "%~3" >nul',
+    'exit /b 3'
+)
+[IO.File]::WriteAllText($warningQpdf, ($warningQpdfLines -join "`r`n"), [Text.Encoding]::ASCII)
+$warningResult = Invoke-PdfCopy -InputPath $plain -QpdfPath $warningQpdf
+Assert-Equal -Expected 'Warning' -Actual $warningResult.Status -Name 'qpdf exit code 3 preserved as warning success'
+Assert-True -Value (Test-Path -LiteralPath $warningResult.OutputPath -PathType Leaf) -Name 'warning output preserved'
+
+$permissionQpdf = Join-Path $integration 'permission-qpdf.cmd'
+$permissionQpdfLines = @(
+    '@echo off',
+    'echo Permission denied 1>&2',
+    'exit /b 2'
+)
+[IO.File]::WriteAllText($permissionQpdf, ($permissionQpdfLines -join "`r`n"), [Text.Encoding]::ASCII)
+$permissionResult = Invoke-PdfCopy -InputPath $plain -QpdfPath $permissionQpdf
+Assert-Equal -Expected 'Failed' -Actual $permissionResult.Status -Name 'write permission failure rejected'
+Assert-True -Value ($permissionResult.Message -match '写入权限') -Name 'write permission failure translated'
+
 $beforeBatchOutputs = @(Get-ChildItem -LiteralPath $integration -Filter '普通 文件_可注释*.pdf').Count
 $batchExitCode = Invoke-Main -InputFiles @($plain, $locked, $broken) -NoPrompt -QpdfPath $qpdf.FullName
 Assert-Equal -Expected 1 -Actual $batchExitCode -Name 'mixed batch reports partial failure'
@@ -132,6 +166,26 @@ Assert-True -Value ($afterBatchOutputs -gt $beforeBatchOutputs) -Name 'mixed bat
 
 $missingQpdfExitCode = Invoke-Main -InputFiles @($plain) -NoPrompt -QpdfPath (Join-Path $integration 'missing-qpdf.exe')
 Assert-Equal -Expected 2 -Actual $missingQpdfExitCode -Name 'missing qpdf stops batch'
+
+$brokenQpdf = Join-Path $integration 'broken-qpdf.exe'
+[IO.File]::WriteAllBytes($brokenQpdf, [byte[]](0, 1, 2, 3))
+$brokenQpdfExitCode = Invoke-Main -InputFiles @($plain) -NoPrompt -QpdfPath $brokenQpdf
+Assert-Equal -Expected 2 -Actual $brokenQpdfExitCode -Name 'unstartable qpdf stops batch'
+
+$beforeExceptionalBatch = @(Get-ChildItem -LiteralPath $integration -Filter '普通 文件_可注释*.pdf').Count
+$exceptionEscaped = $false
+$exceptionalBatchExitCode = $null
+try {
+    $invalidPath = 'illegal' + [char]0 + '.pdf'
+    $exceptionalBatchExitCode = Invoke-Main -InputFiles @($invalidPath, $plain) -NoPrompt -QpdfPath $qpdf.FullName
+}
+catch {
+    $exceptionEscaped = $true
+}
+Assert-Equal -Expected $false -Actual $exceptionEscaped -Name 'path preparation exception stays inside file boundary'
+Assert-Equal -Expected 1 -Actual $exceptionalBatchExitCode -Name 'path preparation failure marks partial batch failure'
+$afterExceptionalBatch = @(Get-ChildItem -LiteralPath $integration -Filter '普通 文件_可注释*.pdf').Count
+Assert-True -Value ($afterExceptionalBatch -gt $beforeExceptionalBatch) -Name 'batch continues after path preparation exception'
 
 Assert-True -Value (Confirm-Processing -NoPrompt) -Name 'non-interactive confirmation bypass'
 
@@ -161,10 +215,60 @@ if ($DeliverySmokeTest) {
         $licenseFiles = @(Get-ChildItem -LiteralPath (Join-Path $delivery 'licenses') -File -ErrorAction SilentlyContinue)
         Assert-True -Value ($licenseFiles.Count -ge 3) -Name 'delivery contains qpdf license notices'
 
+        if (Test-Path -LiteralPath $deliveryManifest -PathType Leaf) {
+            $manifestValid = $true
+            foreach ($line in Get-Content -LiteralPath $deliveryManifest) {
+                if ($line -notmatch '^([A-F0-9]{64})  (.+)$') {
+                    $manifestValid = $false
+                    break
+                }
+                $expectedHash = $Matches[1]
+                $manifestFile = Join-Path $delivery $Matches[2]
+                if ((-not (Test-Path -LiteralPath $manifestFile -PathType Leaf)) -or
+                    ((Get-FileHash -Algorithm SHA256 -LiteralPath $manifestFile).Hash -ne $expectedHash)) {
+                    $manifestValid = $false
+                    break
+                }
+            }
+            Assert-True -Value $manifestValid -Name 'delivery manifest validates every file'
+        }
+
         if (Test-Path -LiteralPath $deliveryQpdf -PathType Leaf) {
             $deliveryVersion = & $deliveryQpdf --version
             Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Name 'bundled qpdf starts'
             Assert-True -Value (($deliveryVersion -join ' ') -match '12\.4\.2') -Name 'bundled qpdf version pinned'
+        }
+
+        if (Test-Path -LiteralPath $deliveryZip -PathType Leaf) {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zipArchive = [IO.Compression.ZipFile]::OpenRead($deliveryZip)
+            try {
+                $zipFileEntries = @($zipArchive.Entries | Where-Object { $_.Name } | ForEach-Object { $_.FullName.Replace('\', '/') } | Sort-Object)
+            }
+            finally {
+                $zipArchive.Dispose()
+            }
+            $expectedZipEntries = @(Get-ChildItem -LiteralPath $delivery -Recurse -File | ForEach-Object {
+                'PDF权限处理工具_BAT版/' + $_.FullName.Substring($delivery.Length + 1).Replace('\', '/')
+            } | Sort-Object)
+            Assert-Equal -Expected ($expectedZipEntries -join "`n") -Actual ($zipFileEntries -join "`n") -Name 'ZIP contains exact delivery file set'
+
+            $zipTestRoot = Join-Path $projectRoot ('tests\tmp\zip acceptance ' + [guid]::NewGuid().ToString('N'))
+            Expand-Archive -LiteralPath $deliveryZip -DestinationPath $zipTestRoot
+            $zipToolRoot = Join-Path $zipTestRoot 'PDF权限处理工具_BAT版'
+            $zipQpdf = Join-Path $zipToolRoot 'qpdf\bin\qpdf.exe'
+            $zipBat = Join-Path $zipToolRoot 'PDF权限处理工具.bat'
+            $zipInputDir = Join-Path $zipTestRoot 'input (中文 &!)'
+            New-Item -ItemType Directory -Force -Path $zipInputDir | Out-Null
+            $zipInput = Join-Path $zipInputDir 'ZIP BAT 验收 (1) &!.pdf'
+            & $zipQpdf '--empty' $zipInput
+            $zipFixtureExitCode = $LASTEXITCODE
+            '' | & $zipBat '-NoPrompt' $zipInput
+            $zipBatExitCode = $LASTEXITCODE
+            $zipOutput = @(Get-ChildItem -LiteralPath $zipInputDir -Filter '*_可注释.pdf' -File)
+            Assert-Equal -Expected 0 -Actual $zipFixtureExitCode -Name 'ZIP qpdf creates acceptance fixture'
+            Assert-Equal -Expected 0 -Actual $zipBatExitCode -Name 'BAT runs from extracted ZIP'
+            Assert-Equal -Expected 1 -Actual $zipOutput.Count -Name 'BAT from ZIP creates output for special path'
         }
     }
 }

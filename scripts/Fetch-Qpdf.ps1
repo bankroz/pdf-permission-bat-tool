@@ -54,29 +54,26 @@ if (-not (Test-FileHash -Path $archivePath -ExpectedHash $expectedSha256)) {
     }
 }
 
-$needsExtraction = -not (Test-Path -LiteralPath $extractDir -PathType Container)
-if (-not $needsExtraction) {
-    $existingQpdf = Get-ChildItem -LiteralPath $extractDir -Filter qpdf.exe -Recurse -File |
-        Select-Object -First 1
-    $needsExtraction = -not [bool]$existingQpdf
+$vendorFullPath = [IO.Path]::GetFullPath($vendorDir)
+$extractFullPath = [IO.Path]::GetFullPath($extractDir)
+$expectedExtractPrefix = $vendorFullPath.TrimEnd('\') + '\'
+if (-not $extractFullPath.StartsWith($expectedExtractPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "拒绝清理意外路径：$extractFullPath"
 }
 
-if ($needsExtraction) {
-    if (Test-Path -LiteralPath $extractDir) {
-        Remove-Item -LiteralPath $extractDir -Recurse -Force
-    }
-    Write-Host '正在解压 qpdf ...'
-    Expand-Archive -LiteralPath $archivePath -DestinationPath $vendorDir -Force
+if (Test-Path -LiteralPath $extractFullPath) {
+    Remove-Item -LiteralPath $extractFullPath -Recurse -Force
 }
+Write-Host '正在从已校验压缩包重新解压 qpdf ...'
+Expand-Archive -LiteralPath $archivePath -DestinationPath $vendorFullPath -Force
 
-$qpdfExe = Get-ChildItem -LiteralPath $extractDir -Filter qpdf.exe -Recurse -File |
-    Select-Object -First 1
-if (-not $qpdfExe) {
+$qpdfExePath = Join-Path $extractFullPath 'bin\qpdf.exe'
+if (-not (Test-Path -LiteralPath $qpdfExePath -PathType Leaf)) {
     throw 'qpdf 压缩包中未找到 qpdf.exe。'
 }
 
-$versionOutput = & $qpdfExe.FullName --version
-if ($LASTEXITCODE -ne 0) {
+$versionOutput = & $qpdfExePath --version
+if (($LASTEXITCODE -ne 0) -or (($versionOutput -join [Environment]::NewLine) -notmatch '(?m)^qpdf version 12\.4\.2\b')) {
     throw 'qpdf.exe 无法启动。'
 }
 
@@ -118,4 +115,4 @@ foreach ($metadata in $metadataFiles) {
 }
 
 Write-Host $versionOutput
-Write-Host "qpdf 已就绪：$($qpdfExe.FullName)"
+Write-Host "qpdf 已就绪：$qpdfExePath"

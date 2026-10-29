@@ -61,7 +61,7 @@ $manifestLines = Get-ChildItem -LiteralPath $delivery -Recurse -File |
 $manifestLines | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
 $versionOutput = & $bundledQpdf --version
-if ($LASTEXITCODE -ne 0) {
+if (($LASTEXITCODE -ne 0) -or (($versionOutput -join [Environment]::NewLine) -notmatch '(?m)^qpdf version 12\.4\.2\b')) {
     throw '便携目录中的 qpdf.exe 无法启动。'
 }
 
