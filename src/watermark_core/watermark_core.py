@@ -58,12 +58,6 @@ def process_pdf(input_path, output_path):
     output = Path(output_path)
     try:
         source_path = Path(input_path)
-        if source_path.resolve() == output.resolve() or (
-            output.exists() and source_path.samefile(output)
-        ):
-            raise ValueError("输入与输出不能是同一文件")
-        if output.exists():
-            raise FileExistsError("输出文件已存在")
         with source_path.open("rb") as source:
             reader = PdfReader(source, strict=False)
             if reader.is_encrypted and reader.decrypt("") == 0:
@@ -88,6 +82,12 @@ def process_pdf(input_path, output_path):
                     removed_blocks += removed
             if not removed_blocks:
                 return {"status": "unsupported", "message": "未找到明确标记的水印块", "pages": pages, "removed_blocks": 0}
+            if source_path.resolve() == output.resolve() or (
+                output.exists() and source_path.samefile(output)
+            ):
+                raise ValueError("输入与输出不能是同一文件")
+            if output.exists():
+                raise FileExistsError("输出文件已存在")
             with output.open("xb") as destination:
                 output_started = True
                 writer.write(destination)

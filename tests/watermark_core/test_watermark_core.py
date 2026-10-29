@@ -212,12 +212,28 @@ class WatermarkCoreTests(unittest.TestCase):
         self.assertEqual(self.process()["status"], "failed")
         self.assertEqual(self.output.read_bytes(), original)
 
-    def test_existing_output_is_rejected_even_without_a_watermark(self):
+    def test_existing_output_preserves_unsupported_input_status(self):
         self.make_pdf(BODY)
         original = b"existing output with unsupported input"
         self.output.write_bytes(original)
 
-        self.assertEqual(self.process()["status"], "failed")
+        self.assertEqual(self.process()["status"], "unsupported")
+        self.assertEqual(self.output.read_bytes(), original)
+
+    def test_existing_output_preserves_invalid_input_status(self):
+        self.make_pdf(START + MARK)
+        original = b"existing output with invalid input"
+        self.output.write_bytes(original)
+
+        self.assertEqual(self.process()["status"], "invalid")
+        self.assertEqual(self.output.read_bytes(), original)
+
+    def test_existing_output_preserves_encrypted_input_status(self):
+        self.make_pdf(WATERMARK + BODY, password="user-secret")
+        original = b"existing output with encrypted input"
+        self.output.write_bytes(original)
+
+        self.assertEqual(self.process()["status"], "encrypted")
         self.assertEqual(self.output.read_bytes(), original)
 
     def test_existing_output_is_preserved_when_writer_would_fail(self):
